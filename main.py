@@ -9,6 +9,7 @@ from flask_cors import CORS
 from flask_session import Session
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import func
+from dotenv import load_dotenv
 import random
 import secrets
 
@@ -19,6 +20,7 @@ from gemini_service import validate_disposal_with_ai_video
 from hotspot_generator import generate_hotspots, generate_offline_hotspots
 from offline_manager import OfflineManager
 
+load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -897,5 +899,9 @@ def update_daily_mission_progress(user_id, waste_category, waste_sub_type):
     
     db.session.commit()
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+if __name__ == "__main__":
+    host = os.environ.get('HOST', '0.0.0.0')
+    port = int(os.environ.get('PORT', 5000))
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    
+    app.run(host=host, port=port, debug=debug)
