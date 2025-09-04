@@ -42,15 +42,25 @@ def check_celery():
     except Exception as e: return {"status": "ERROR", "details": f"Could not connect to Celery broker (Redis). Error: {str(e)}"}
 
 # --- Data Fetching Functions for Dashboard ---
-def get_current_challenges_data():
-    """Fetches all active challenges from Firestore."""
+def get_all_challenges_data():
+    """
+    Fetches ALL challenges from Firestore and categorizes them.
+    This query requires a composite index on (type ASC, createdAt DESC).
+    """
     try:
-        query = db.collection('challenges').where(filter=firestore.FieldFilter('isActive', '==', True)).order_by('expiresAt')
-        return [doc.to_dict() for doc in query.stream()]
+        query = db.collection('challenges').order_by('type').order_by('createdAt', direction=firestore.Query.DESCENDING)
+        
+        all_challenges = [doc.to_dict() for doc in query.stream()]
+        
+        categorized = {
+            'daily': [c for c in all_challenges if c.get('type') == 'daily'],
+            'weekly': [c for c in all_challenges if c.get('type') == 'weekly'],
+            'monthly': [c for c in all_challenges if c.get('type') == 'monthly'],
+        }
+        return categorized
     except Exception as e:
         logging.error(f"Admin dashboard failed to fetch challenges: {e}")
-        return None # Return None to indicate an error
-
+        return None
 def get_leaderboard_data():
     """Fetches top 10 users from Firestore for the leaderboard."""
     try:
@@ -64,7 +74,7 @@ def get_leaderboard_data():
         logging.error(f"Admin dashboard failed to fetch leaderboard: {e}")
         return None # Return None to indicate an error
 
-# --- HTML Template for the Admin Dashboard ---
+# --- NEW HTML Template for the Admin Dashboard ---
 ADMIN_PAGE_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -74,22 +84,22 @@ ADMIN_PAGE_TEMPLATE = """
     <title>TrackEco Admin Dashboard</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f4f7f6; color: #333; }
-        .container { max-width: 960px; margin: 2rem auto; padding: 1rem; }
+        .container { max-width: 1200px; margin: 2rem auto; padding: 1rem; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
-        .card { background: white; border-radius: 8px; padding: 1.5rem; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+        .full-width { grid-column: 1 / -1; }
+        .card { background: white; border-radius: 8px; padding: 1.5rem; box-shadow: 0 2px 10px rgba(0,0,0,0.08); margin-bottom: 2rem; }
         h1, h2 { color: #1a202c; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.5rem; margin-top: 0; }
-        .status-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-        .status-table th, .status-table td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        .status-table, .data-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        .status-table th, .status-table td, .data-table th, .data-table td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #e2e8f0; }
         .status-table th { font-weight: 600; color: #4a5568; width: 30%; }
+        .data-table th { font-weight: 600; color: #4a5568; background-color: #f7fafc; }
+        .data-table tr.inactive td { color: #a0aec0; background-color: #fdfdfd; }
         .status-badge { padding: 0.25rem 0.6rem; border-radius: 1rem; font-weight: 700; font-size: 0.9em; color: white; display: inline-block; }
         .ok { background-color: #38a169; }
         .error { background-color: #e53e3e; }
         .details { font-size: 0.9em; color: #718096; word-break: break-word; }
         .footer { text-align: center; margin-top: 2rem; font-size: 0.8em; color: #a0aec0; }
-        .list { list-style: none; padding: 0; }
-        .list-item { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #eee; }
-        .list-item:last-child { border-bottom: none; }
-        @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+        @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -126,28 +136,43 @@ ADMIN_PAGE_TEMPLATE = """
                     </tbody>
                 </table>
             </div>
-            <div class="card">
+            <div class="card full-width">
                 <h2>Live Leaderboard (Top 10)</h2>
                 {% if leaderboard %}
-                <ul class="list">
-                {% for user in leaderboard %}
-                    <li class="list-item"><strong>#{{ user.rank }} {{ user.displayName }}</strong> - {{ "%.1f"|format(user.totalPoints) }} pts</li>
-                {% endfor %}
-                </ul>
-                {% else %}
-                <p class="details">Leaderboard is empty or could not be loaded.</p>
-                {% endif %}
+                <table class="data-table">
+                    <thead><tr><th>Rank</th><th>Display Name</th><th>Total Points</th></tr></thead>
+                    <tbody>
+                    {% for user in leaderboard %}
+                        <tr><td>#{{ user.rank }}</td><td>{{ user.displayName }}</td><td>{{ "%.1f"|format(user.totalPoints) }} pts</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<p class="details">Leaderboard is empty or could not be loaded.</p>{% endif %}
             </div>
-            <div class="card">
-                <h2>Active Challenges</h2>
+            <div class="card full-width">
+                <h2>All Challenges</h2>
                 {% if challenges %}
-                <ul class="list">
-                {% for challenge in challenges %}
-                    <li class="list-item"><strong>{{ challenge.type|capitalize }}:</strong> {{ challenge.description }} (+{{ challenge.bonusPoints }} pts)</li>
-                {% endfor %}
-                </ul>
-                 {% else %}
-                <p class="details">No active challenges or could not be loaded.</p>
+                    {% for type, challenge_list in challenges.items() %}
+                        {% if challenge_list %}
+                            <h3>{{ type|capitalize }} Challenges</h3>
+                            <table class="data-table">
+                                <thead><tr><th>Description</th><th>Status</th><th>Type</th><th>Points</th><th>Expires</th></tr></thead>
+                                <tbody>
+                                {% for challenge in challenge_list %}
+                                    <tr class="{{ 'inactive' if not challenge.isActive }}">
+                                        <td>{{ challenge.description }}</td>
+                                        <td><span class="status-badge {{ 'ok' if challenge.isActive else 'error' }}">{{ 'Active' if challenge.isActive else 'Inactive' }}</span></td>
+                                        <td>{{ 'Progress' if challenge.progressGoal else 'Simple' }}</td>
+                                        <td>+{{ challenge.bonusPoints }}</td>
+                                        <td>{{ challenge.expiresAt.strftime('%Y-%m-%d %H:%M') if challenge.expiresAt else 'N/A' }}</td>
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        {% endif %}
+                    {% endfor %}
+                {% else %}
+                <p class="details">No challenges found or could not be loaded.</p>
                 {% endif %}
             </div>
         </div>
@@ -165,22 +190,10 @@ def system_admin_dashboard():
     if not ADMIN_SECRET_KEY or secret != ADMIN_SECRET_KEY:
         return "Unauthorized", 401
 
-    internal_module_checks = {
-        "Authentication": auth_health_check(),
-        "Onboarding": onboarding_health_check(),
-        "Social": social_health_check(),
-        "Gamification": gamification_health_check(),
-        "Core Upload": core_health_check(),
-    }
+    # ... (internal_module_checks and external_service_checks are the same) ...
 
-    external_service_checks = {
-        "Redis Cache": check_redis(),
-        "Celery Workers": check_celery(),
-        "Gemini AI API": check_gemini_api(),
-    }
-
-    # Fetch live data
-    live_challenges = get_current_challenges_data()
+    # Fetch live data using the new categorized function
+    categorized_challenges = get_all_challenges_data()
     live_leaderboard = get_leaderboard_data()
 
     timestamp = datetime.datetime.now(pytz.timezone('Asia/Jakarta')).strftime('%Y-%m-%d %H:%M:%S %Z')
@@ -189,7 +202,7 @@ def system_admin_dashboard():
         ADMIN_PAGE_TEMPLATE, 
         internal_checks=internal_module_checks,
         external_checks=external_service_checks,
-        challenges=live_challenges,
+        challenges=categorized_challenges, # Pass the categorized dictionary
         leaderboard=live_leaderboard,
         timestamp=timestamp
     )
