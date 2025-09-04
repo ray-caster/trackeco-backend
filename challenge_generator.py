@@ -77,7 +77,7 @@ Your response must be a single JSON object conforming to this JSON Schema. Do no
     },
     "bonusPoints": {
       "type": "integer",
-      "description": "Points based on difficulty (daily: 5-20, weekly: 25-50, monthly: 60-100)."
+      "description": "Points based on difficulty (daily: 5-20, weekly: 70-150, monthly: 700-1000)."
     },
     "keyword": {
       "type": "string",
