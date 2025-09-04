@@ -190,7 +190,19 @@ def system_admin_dashboard():
     if not ADMIN_SECRET_KEY or secret != ADMIN_SECRET_KEY:
         return "Unauthorized", 401
 
-    # ... (internal_module_checks and external_service_checks are the same) ...
+    internal_module_checks = {
+        "Authentication": auth_health_check(),
+        "Onboarding": onboarding_health_check(),
+        "Social": social_health_check(),
+        "Gamification": gamification_health_check(),
+        "Core Upload": core_health_check(),
+    }
+
+    external_service_checks = {
+        "Redis Cache": check_redis(),
+        "Celery Workers": check_celery(),
+        "Gemini AI API": check_gemini_api(),
+    }
 
     # Fetch live data using the new categorized function
     categorized_challenges = get_all_challenges_data()
