@@ -12,9 +12,24 @@ from celery_worker import celery_app # Import the shared celery_app instance
 # --- SETUP & CONFIG ---
 setup_logging()
 load_dotenv()
-firebase_admin.initialize_app()
-app = Flask(__name__)
-celery_app.conf.update(app.config)
+
+try:
+    SERVICE_ACCOUNT_FILE = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not SERVICE_ACCOUNT_FILE:
+        raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
+    if not os.path.exists(SERVICE_ACCOUNT_FILE):
+        raise FileNotFoundError(f"Service account key not found at path: {SERVICE_ACCOUNT_FILE}")
+
+    # Create credential object
+    creds = credentials.Certificate(SERVICE_ACCOUNT_FILE)
+    # Initialize Firebase with these specific credentials
+    firebase_admin.initialize_app(creds)
+    logging.info("Firebase Admin SDK initialized successfully with explicit credentials.")
+
+except Exception as e:
+    logging.critical(f"FATAL: Failed to initialize Firebase Admin SDK. Error: {e}", exc_info=True)
+    # If this fails, the app cannot run.
+    exit()
 
 # --- Import and Register Blueprints ---
 from api.auth import auth_bp

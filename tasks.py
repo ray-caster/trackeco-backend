@@ -16,14 +16,29 @@ from logging_config import setup_logging
 # --- SETUP & CONFIG ---
 setup_logging()
 load_dotenv()
-if not firebase_admin._apps: firebase_admin.initialize_app()
-db = firestore.Client()
-storage_client = storage.Client()
-celery_app = Celery('tasks', broker=os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0'), include=['tasks'])
-GEMINI_API_KEYS = [ os.environ.get(f"GEMINI_API_KEY_{i+1}") for i in range(4) ]
-ACTIVE_GEMINI_KEYS = [key for key in GEMINI_API_KEYS if key]
-GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")
-WIB_TZ = pytz.timezone('Asia/Jakarta')
+try:
+    SERVICE_ACCOUNT_FILE = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not SERVICE_ACCOUNT_FILE:
+        raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
+    if not os.path.exists(SERVICE_ACCOUNT_FILE):
+        raise FileNotFoundError(f"Service account key not found at path: {SERVICE_ACCOUNT_FILE}")
+
+    creds = credentials.Certificate(SERVICE_ACCOUNT_FILE)
+    # Check if a Firebase app is already initialized to prevent errors
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(creds)
+        logging.info("Firebase Admin SDK initialized for Celery worker.")
+
+    # Pass the credentials object directly to the clients
+    db = firestore.Client(credentials=creds.get_credential())
+    storage_client = storage.Client(credentials=creds.get_credential())
+    logging.info("Firestore and Storage clients initialized for Celery worker.")
+
+except Exception as e:
+    logging.critical(f"FATAL: Celery worker setup failed. Error: {e}", exc_info=True)
+    # Exit if setup fails
+    exit()
+
 
 AI_ANALYSIS_PROMPT = """
 <RoleAndGoal>
