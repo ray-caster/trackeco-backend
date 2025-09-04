@@ -23,6 +23,61 @@ def process_friend_request_transaction(transaction, current_user_ref, requester_
     transaction.update(current_user_ref, {'friendRequestsReceived': firestore.ArrayRemove([requester_id])})
     transaction.update(requester_ref, {'friendRequestsSent': firestore.ArrayRemove([current_user_id])})
 
+def get_user_profiles_from_ids(user_ids):
+    """
+    Efficiently fetches multiple user profiles from a list of user IDs.
+    Returns a list of public profile dictionaries.
+    """
+    if not user_ids:
+        return []
+    
+    # Use a generator to create references
+    refs = (db.collection('users').document(uid) for uid in user_ids)
+    docs = db.get_all(refs)
+    
+    profiles = []
+    for doc in docs:
+        if doc.exists:
+            user = doc.to_dict()
+            profiles.append({
+                "userId": user.get('userId'),
+                "displayName": user.get('displayName'),
+                "username": user.get('username')
+                # Add avatarUrl here in the future
+            })
+    return profiles
+
+
+# --- Endpoints ---
+@social_bp.route('/', methods=['GET'])
+@token_required
+def get_all_friend_data(user_id):
+    """
+    A single, efficient endpoint to get all friend-related data for the current user.
+    """
+    user_ref = db.collection('users').document(user_id)
+    user_doc = user_ref.get()
+
+    if not user_doc.exists:
+        return jsonify({"error": "User not found"}), 404
+
+    user_data = user_doc.to_dict()
+    
+    friend_ids = user_data.get('friends', [])
+    sent_request_ids = user_data.get('friendRequestsSent', [])
+    received_request_ids = user_data.get('friendRequestsReceived', [])
+
+    # Fetch the full profile data for each list of IDs
+    friends = get_user_profiles_from_ids(friend_ids)
+    sent_requests = get_user_profiles_from_ids(sent_request_ids)
+    received_requests = get_user_profiles_from_ids(received_request_ids)
+
+    return jsonify({
+        "friends": friends,
+        "sentRequests": sent_requests,
+        "receivedRequests": received_requests
+    }), 200
+
 # --- Endpoints ---
 @social_bp.route('/users/search', methods=['GET'])
 @token_required
