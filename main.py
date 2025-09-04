@@ -4,7 +4,7 @@ from flask import Flask, jsonify
 from dotenv import load_dotenv
 import firebase_admin
 from pydantic import ValidationError
-
+from google.cloud import firestore
 from logging_config import setup_logging
 from celery_worker import celery_app
 
