@@ -17,6 +17,7 @@ from .config import db, JWT_SECRET_KEY, ANDROID_CLIENT_ID
 
 auth_bp = Blueprint('auth_bp', __name__)
 
+
 # --- Helpers ---
 def generate_unique_referral_code():
     """Generates a referral code and guarantees it's unique in the database."""
@@ -145,3 +146,17 @@ def auth_google():
         
     app_token = jwt.encode({'user_id': google_id, 'email': user_email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEY)
     return jsonify({"token": app_token}), 200
+
+def health_check():
+    """
+    Performs a non-destructive health check for the auth module.
+    Checks connectivity to required Firestore collections.
+    """
+    try:
+        # A simple, low-cost read operation to verify connectivity and permissions.
+        _ = list(db.collection('users').limit(1).stream())
+        _ = list(db.collection('email_mappings').limit(1).stream())
+        _ = list(db.collection('verification_attempts').limit(1).stream())
+        return {"status": "OK", "details": "Firestore collections are accessible."}
+    except Exception as e:
+        return {"status": "ERROR", "details": f"Failed to query Firestore collections: {str(e)}"}

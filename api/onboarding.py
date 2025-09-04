@@ -73,3 +73,14 @@ def onboarding_referral(user_id):
 def onboarding_finish(user_id):
     db.collection('users').document(user_id).update({'onboardingStep': 4, 'onboardingComplete': True})
     return jsonify({"message": "Onboarding complete"}), 200
+
+def health_check():
+    """
+    Performs a non-destructive health check for the onboarding module.
+    """
+    try:
+        _ = list(db.collection('usernames').limit(1).stream())
+        _ = list(db.collection('referral_codes').limit(1).stream())
+        return {"status": "OK", "details": "Firestore collections are accessible."}
+    except Exception as e:
+        return {"status": "ERROR", "details": f"Failed to query Firestore collections: {str(e)}"}

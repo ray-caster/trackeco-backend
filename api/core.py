@@ -114,3 +114,15 @@ def get_history(user_id):
         results.append(data)
         
     return jsonify(results), 200
+
+def health_check():
+    """
+    Performs a non-destructive health check for the core module.
+    """
+    try:
+        # This checks GCS bucket permissions and Cloud Tasks queue permissions
+        _ = storage_client.get_bucket(GCS_BUCKET_NAME)
+        _ = tasks_client.get_queue(name=f"projects/{GCP_PROJECT_ID}/locations/{GCP_QUEUE_LOCATION}/queues/{GCP_QUEUE_ID}")
+        return {"status": "OK", "details": "GCS bucket and Cloud Tasks queue are accessible."}
+    except Exception as e:
+        return {"status": "ERROR", "details": f"Failed to access GCS or Cloud Tasks. Check permissions. Error: {str(e)}"}

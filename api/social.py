@@ -124,3 +124,16 @@ def find_by_contacts(user_id):
             results.append({"userId": user.get('userId'), "displayName": user.get('displayName'), "username": user.get('username')})
 
     return jsonify(results), 200
+
+def health_check():
+    """
+    Performs a non-destructive health check for the social module.
+    """
+    try:
+        # Checks if the prefix search query index is working.
+        _ = list(db.collection('users').order_by('displayName').start_at(['a']).end_at(['a' + '\uf8ff']).limit(1).stream())
+        _ = list(db.collection('contact_hashes').limit(1).stream())
+        return {"status": "OK", "details": "Firestore collections and search index are accessible."}
+    except Exception as e:
+        # This will catch errors if the required index is missing.
+        return {"status": "ERROR", "details": f"Failed to query Firestore collections. Check indexes. Error: {str(e)}"}

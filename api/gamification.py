@@ -109,3 +109,16 @@ def get_challenges():
         redis_client.set(cache_key, json.dumps(active_challenges, default=str), ex=3600)
         
     return jsonify(active_challenges), 200
+
+def health_check():
+    """
+    Performs a non-destructive health check for the gamification module.
+    """
+    try:
+        # Checks if the leaderboard query index is working.
+        _ = list(db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING).limit(1).stream())
+        _ = list(db.collection('challenges').where(filter=firestore.FieldFilter('isActive', '==', True)).limit(1).stream())
+        return {"status": "OK", "details": "Firestore collections and leaderboard index are accessible."}
+    except Exception as e:
+        # This will catch errors if the required indexes are missing.
+        return {"status": "ERROR", "details": f"Failed to query Firestore collections. Check indexes. Error: {str(e)}"}
