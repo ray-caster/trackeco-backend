@@ -4,30 +4,21 @@ from flask import Flask, jsonify
 from dotenv import load_dotenv
 import firebase_admin
 from pydantic import ValidationError
-from celery import Celery
 
 from logging_config import setup_logging
+# Import the shared celery_app instance
+from celery_worker import celery_app
 
 # --- SETUP & CONFIG ---
 setup_logging()
 load_dotenv()
-
-# Use default credentials provided by the environment (e.g., GOOGLE_APPLICATION_CREDENTIALS)
-# This is read automatically by the Google Cloud libraries.
 firebase_admin.initialize_app()
 app = Flask(__name__)
 
-# --- CELERY APP INSTANCE ---
-# This instance is created here so it can be imported by the status blueprint.
-celery_app = Celery('tasks', broker=os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0'))
-celery_app.conf.update(
-    # Optional: Add any specific Celery configurations here if needed
-    task_track_started=True
-)
+# Update the Celery app with the Flask app config
+celery_app.conf.update(app.config)
 
-
-# --- IMPORT AND REGISTER BLUEPRINTS ---
-# Blueprints are imported after the app is created to avoid circular dependencies.
+# --- Import and Register Blueprints ---
 from api.auth import auth_bp
 from api.onboarding import onboarding_bp
 from api.social import social_bp
@@ -40,13 +31,11 @@ app.register_blueprint(onboarding_bp, url_prefix='/onboarding')
 app.register_blueprint(social_bp, url_prefix='/friends')
 app.register_blueprint(gamification_bp, url_prefix='/')
 app.register_blueprint(core_bp, url_prefix='/')
-app.register_blueprint(status_bp, url_prefix='/') # Registers the /status endpoint
+app.register_blueprint(status_bp, url_prefix='/')
 
-
-# --- GLOBAL ERROR HANDLERS ---
+# --- Global Error Handlers ---
 @app.errorhandler(ValidationError)
 def handle_validation_error(e):
-    """Handles Pydantic validation errors for clean API responses across all blueprints."""
     return jsonify({"error_code": "BAD_REQUEST", "details": e.errors()}), 400
 
 @app.errorhandler(404)

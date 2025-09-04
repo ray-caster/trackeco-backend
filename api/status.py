@@ -4,10 +4,10 @@ import datetime
 import pytz
 from flask import Blueprint, request, render_template_string
 from google import genai
-from main import celery_app
+# FIX: Import from the new celery_worker.py file
+from celery_worker import celery_app
 
-# Import the specific health_check function from each of your API modules
-from .config import redis_client, ACTIVE_GEMINI_KEYS
+from .config import db, storage_client, redis_client, GCS_BUCKET_NAME, ACTIVE_GEMINI_KEYS
 from .auth import health_check as auth_health_check
 from .onboarding import health_check as onboarding_health_check
 from .social import health_check as social_health_check
@@ -15,6 +15,7 @@ from .gamification import health_check as gamification_health_check
 from .core import health_check as core_health_check
 
 status_bp = Blueprint('status_bp', __name__)
+
 
 # --- External Service Check Functions ---
 def check_redis():
