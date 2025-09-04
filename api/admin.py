@@ -4,6 +4,7 @@ import datetime
 import pytz
 from flask import Blueprint, request, render_template_string
 from google import genai
+from google.cloud import firestore
 from main import celery_app
 
 # Import all necessary clients and health checks from other modules
