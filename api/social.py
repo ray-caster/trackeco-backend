@@ -1,4 +1,4 @@
-import hashlib
+import logging
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 
@@ -14,10 +14,12 @@ def process_friend_request_transaction(transaction, current_user_ref, requester_
     """Atomically adds users to each other's friends list and removes requests."""
     requester_id = requester_ref.id
     current_user_id = current_user_ref.id
-    # Add to friends lists
+    
+    # Add to friends lists for both users
     transaction.update(current_user_ref, {'friends': firestore.ArrayUnion([requester_id])})
     transaction.update(requester_ref, {'friends': firestore.ArrayUnion([current_user_id])})
-    # Remove from request lists
+    
+    # Remove from pending request lists for both users
     transaction.update(current_user_ref, {'friendRequestsReceived': firestore.ArrayRemove([requester_id])})
     transaction.update(requester_ref, {'friendRequestsSent': firestore.ArrayRemove([current_user_id])})
 
@@ -31,7 +33,7 @@ def search_users(user_id):
     
     results, found_ids = [], set()
     
-    # 1. Exact username match (fastest)
+    # 1. Exact username match (fastest lookup)
     username_doc = db.collection('usernames').document(query_str).get()
     if username_doc.exists:
         match_user_id = username_doc.to_dict().get('userId')
@@ -42,7 +44,8 @@ def search_users(user_id):
                 results.append({"userId": user['userId'], "displayName": user.get('displayName'), "username": user.get('username')})
                 found_ids.add(user['userId'])
 
-    # 2. Prefix search on display name
+    # 2. Prefix search on display name (slower, for discovery)
+    # This requires a composite index on (displayName ASC)
     query = db.collection('users').order_by('displayName').start_at([query_str]).end_at([query_str + '\uf8ff']).limit(10)
     for doc in query.stream():
         user = doc.to_dict()
@@ -57,7 +60,7 @@ def search_users(user_id):
 @token_required
 def send_friend_request(user_id):
     req_data = FriendRequest.model_validate(request.get_json())
-    if user_id == req_data.targetUserId: return jsonify({"error": "Cannot add yourself"}), 400
+    if user_id == req_data.targetUserId: return jsonify({"error": "Cannot add yourself as a friend."}), 400
     
     current_user_ref = db.collection('users').document(user_id)
     target_user_ref = db.collection('users').document(req_data.targetUserId)
@@ -67,7 +70,7 @@ def send_friend_request(user_id):
     batch.update(target_user_ref, {'friendRequestsReceived': firestore.ArrayUnion([user_id])})
     batch.commit()
     
-    return jsonify({"message": "Friend request sent"}), 200
+    return jsonify({"message": "Friend request sent."}), 200
 
 @social_bp.route('/accept', methods=['POST'])
 @token_required
@@ -77,7 +80,7 @@ def accept_friend_request(user_id):
     requester_ref = db.collection('users').document(req_data.requesterUserId)
     
     process_friend_request_transaction(db.transaction(), current_user_ref, requester_ref)
-    return jsonify({"message": "Friend request accepted"}), 200
+    return jsonify({"message": "Friend request accepted."}), 200
 
 @social_bp.route('/decline', methods=['POST'])
 @token_required
@@ -91,8 +94,22 @@ def decline_friend_request(user_id):
     batch.update(requester_ref, {'friendRequestsSent': firestore.ArrayRemove([user_id])})
     batch.commit()
     
-    return jsonify({"message": "Friend request declined"}), 200
+    return jsonify({"message": "Friend request declined."}), 200
 
+@social_bp.route('/remove', methods=['POST'])
+@token_required
+def remove_friend(user_id):
+    req_data = FriendRequest.model_validate(request.get_json()) # Re-use FriendRequest model
+    current_user_ref = db.collection('users').document(user_id)
+    friend_ref = db.collection('users').document(req_data.targetUserId)
+    
+    batch = db.batch()
+    batch.update(current_user_ref, {'friends': firestore.ArrayRemove([req_data.targetUserId])})
+    batch.update(friend_ref, {'friends': firestore.ArrayRemove([user_id])})
+    batch.commit()
+    
+    return jsonify({"message": "Friend removed."}), 200
+    
 @social_bp.route('/find-by-contacts', methods=['POST'])
 @token_required
 def find_by_contacts(user_id):
@@ -103,7 +120,6 @@ def find_by_contacts(user_id):
     # Firestore 'in' query is limited to 30 items, so we process in chunks
     for i in range(0, len(req_data.hashes), 30):
         chunk = req_data.hashes[i:i+30]
-        # FIX: Use the correct syntax for an "IN" query
         query = db.collection('contact_hashes').where(filter=firestore.FieldFilter.from_document_id("in", chunk))
         for doc in query.stream():
             uid = doc.to_dict().get('userId')
@@ -113,27 +129,26 @@ def find_by_contacts(user_id):
     if not matching_user_ids:
         return jsonify([]), 200
 
-    # Now fetch the profiles for the matched user IDs
-    user_refs = [db.collection('users').document(uid) for uid in list(matching_user_ids)]
-    user_docs = db.getAll(user_refs)
-    
-    results = []
-    for doc in user_docs:
-        if doc.exists:
+    # Now fetch the profiles for the matched user IDs using another 'in' query
+    # (also chunked for safety)
+    final_results = []
+    user_id_list = list(matching_user_ids)
+    for i in range(0, len(user_id_list), 30):
+        chunk = user_id_list[i:i+30]
+        user_query = db.collection('users').where(filter=firestore.FieldFilter("userId", "in", chunk))
+        for doc in user_query.stream():
             user = doc.to_dict()
-            results.append({"userId": user.get('userId'), "displayName": user.get('displayName'), "username": user.get('username')})
+            final_results.append({"userId": user.get('userId'), "displayName": user.get('displayName'), "username": user.get('username')})
 
-    return jsonify(results), 200
+    return jsonify(final_results), 200
 
+# --- HEALTH CHECK ---
 def health_check():
-    """
-    Performs a non-destructive health check for the social module.
-    """
+    """Performs a non-destructive health check for the social module."""
     try:
         # Checks if the prefix search query index is working.
         _ = list(db.collection('users').order_by('displayName').start_at(['a']).end_at(['a' + '\uf8ff']).limit(1).stream())
         _ = list(db.collection('contact_hashes').limit(1).stream())
         return {"status": "OK", "details": "Firestore collections and search index are accessible."}
     except Exception as e:
-        # This will catch errors if the required index is missing.
         return {"status": "ERROR", "details": f"Failed to query Firestore collections. Check indexes. Error: {str(e)}"}

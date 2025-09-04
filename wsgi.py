@@ -1,4 +1,4 @@
-from main import app
+from asgiref.wsgi import WsgiToAsgi
+from main import app  # Your Flask or Django WSGI app
 
-if __name__ == "__main__":
-    app.run()
+application = WsgiToAsgi(app)
