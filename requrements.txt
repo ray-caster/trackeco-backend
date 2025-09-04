@@ -15,4 +15,4 @@ pydantic
 pydantic[email]
 pytz
 Pillow
-genai
+google-genai
