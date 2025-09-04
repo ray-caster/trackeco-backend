@@ -16,30 +16,42 @@ from logging_config import setup_logging
 # --- SETUP & CONFIG ---
 setup_logging()
 load_dotenv()
-try:
-    SERVICE_ACCOUNT_FILE = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if not SERVICE_ACCOUNT_FILE:
-        raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        raise FileNotFoundError(f"Service account key not found at path: {SERVICE_ACCOUNT_FILE}")
+# The celery_app instance must be defined globally and include the tasks module
+celery_app = Celery('tasks', broker=os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0'), include=['tasks'])
 
-    creds = credentials.Certificate(SERVICE_ACCOUNT_FILE)
-    # Check if a Firebase app is already initialized to prevent errors
+# --- GLOBAL CONSTANTS ---
+GEMINI_API_KEYS = [ os.environ.get(f"GEMINI_API_KEY_{i+1}") for i in range(4) ]
+ACTIVE_GEMINI_KEYS = [key for key in GEMINI_API_KEYS if key]
+GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")
+WIB_TZ = pytz.timezone('Asia/Jakarta')
+
+# --- LAZY INITIALIZED CLIENTS (for Celery fork safety) ---
+_db = None
+_storage_client = None
+_firebase_app = None
+
+def get_db():
+    """Initializes and returns a Firestore client instance."""
+    global _db
+    if _db is None:
+        _db = firestore.Client()
+    return _db
+
+def get_storage_client():
+    """Initializes and returns a Storage client instance."""
+    global _storage_client
+    if _storage_client is None:
+        _storage_client = storage.Client()
+    return _storage_client
+
+def initialize_firebase():
+    """Initializes the Firebase Admin SDK if it hasn't been already."""
+    global _firebase_app
     if not firebase_admin._apps:
-        firebase_admin.initialize_app(creds)
-        logging.info("Firebase Admin SDK initialized for Celery worker.")
+        _firebase_app = firebase_admin.initialize_app()
+        logging.info("Firebase Admin SDK initialized for Celery worker process.")
 
-    # Pass the credentials object directly to the clients
-    db = firestore.Client(credentials=creds.get_credential())
-    storage_client = storage.Client(credentials=creds.get_credential())
-    logging.info("Firestore and Storage clients initialized for Celery worker.")
-
-except Exception as e:
-    logging.critical(f"FATAL: Celery worker setup failed. Error: {e}", exc_info=True)
-    # Exit if setup fails
-    exit()
-
-
+# --- PROMPT ---
 AI_ANALYSIS_PROMPT = """
 <RoleAndGoal>
 You are "Eco," an AI scoring judge. Your directive is to analyze a video and return a JSON object with a score, challenge verification, and progress tracking.
@@ -95,28 +107,15 @@ Your entire response MUST be a single, raw JSON object.```json
   "rawScore": <integer>,
   "finalScore": <float>,
   "justification": "<string>",
-  "completedChallengeIds": ["<string, id_of_completed_simple_challenge_1>"],
-  "progressUpdate": { "keyword": "<string, keyword_of_item_counted>", "count": <integer> } | null,
+  "completedChallengeIds": ["<string>"],
+  "progressUpdate": { "keyword": "<string>", "count": <integer> } | null,
   "error": <string | null>
 }
 ```
 </OutputFormat>
-<Examples>
-- Video: User recycles two cans.
-- ActiveChallenges: `[{"challengeId": "c1", "description": "Recycle a can.", "keyword": "can", "type": "simple"}, {"challengeId": "c2", "description": "Recycle 5 cans.", "keyword": "can", "type": "progress"}]`
-- Expected JSON Output:
-```json
-{
-  "environmentalImpact": 19, "dangerousness": 9, "completeness": { "status": "Complete", "penaltyApplied": 0.0 },
-  "rawScore": 28, "finalScore": 28.0, "justification": "Two aluminum cans were recycled correctly.",
-  "completedChallengeIds": ["c1"],
-  "progressUpdate": { "keyword": "can", "count": 2 },
-  "error": null
-}
-```
-</Examples>
 """
 
+# --- HELPER FUNCTIONS ---
 def send_fcm_data_notification(doc_snapshot):
     """Dynamically sends a data-only FCM message with the document's current state."""
     try:
@@ -139,6 +138,7 @@ def send_fcm_data_notification(doc_snapshot):
 def award_bonus_points(user_id, amount, reason):
     """A simple, separate task to award points to a user."""
     try:
+        db = get_db()
         user_ref = db.collection('users').document(user_id)
         user_ref.update({'totalPoints': firestore.Increment(amount)})
         logging.info(f"Awarded {amount} bonus points to {user_id} for: {reason}")
@@ -200,12 +200,9 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
         'totalPoints': current_points + new_score + bonus_points, 'currentStreak': current_streak,
         'lastStreakTimestamp': firestore.SERVER_TIMESTAMP, 'challengeProgress': challenge_progress
     }
-    if is_first_upload:
-        user_update_data['hasCompletedFirstUpload'] = True
-    if newly_completed_ids:
-        user_update_data['completedChallengeIds'] = firestore.ArrayUnion(newly_completed_ids)
-    if current_streak > user_data.get('maxStreak', 0):
-        user_update_data['maxStreak'] = current_streak
+    if is_first_upload: user_update_data['hasCompletedFirstUpload'] = True
+    if newly_completed_ids: user_update_data['completedChallengeIds'] = firestore.ArrayUnion(newly_completed_ids)
+    if current_streak > user_data.get('maxStreak', 0): user_update_data['maxStreak'] = current_streak
     
     transaction.update(user_ref, user_update_data)
     transaction.update(upload_ref, {'status': 'COMPLETED', 'aiResult': ai_result_json_string})
@@ -214,16 +211,14 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
 def handle_team_challenge_progress(user_id, progress_update):
     """Handles updating shared progress on team challenges. Runs AFTER the main transaction."""
     if not progress_update: return
+    db = get_db()
     user_doc = db.collection('users').document(user_id).get(['activeTeamChallenges'])
     if not user_doc.exists: return
     active_team_ids = user_doc.to_dict().get('activeTeamChallenges', [])
     if not active_team_ids: return
-
     update_keyword, update_count = progress_update.get('keyword'), progress_update.get('count', 0)
-    
     for team_id in active_team_ids:
         team_challenge_ref = db.collection('teamChallenges').document(team_id)
-        
         @firestore.transactional
         def update_progress_in_transaction(transaction, ref):
             snapshot = ref.get(transaction=transaction)
@@ -238,9 +233,7 @@ def handle_team_challenge_progress(user_id, progress_update):
                 else:
                     transaction.update(ref, {'currentProgress': new_progress})
             return None
-
         completed_challenge = update_progress_in_transaction(db.transaction(), team_challenge_ref)
-        
         if completed_challenge:
             logging.info(f"Team challenge {team_id} completed!")
             members = completed_challenge.get('members', [])
@@ -254,9 +247,14 @@ def handle_team_challenge_progress(user_id, progress_update):
             batch.commit()
             break
 
+# --- MAIN CELERY TASK ---
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=300, acks_late=True)
 def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_id):
     logging.info(f"[{gcs_filename}] -> START for Upload ID: {upload_id}")
+    initialize_firebase()
+    db = get_db()
+    storage_client = get_storage_client()
+    
     upload_ref = db.collection('uploads').document(upload_id)
     bucket = storage_client.bucket(bucket_name)
     source_blob = bucket.blob(gcs_filename)
@@ -276,7 +274,10 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         active_challenges_prompt = []
         for challenge in active_challenges_full:
             if challenge.get('challengeId') not in user_completed_ids:
-                prompt_challenge = {"challengeId": challenge.get('challengeId'), "description": challenge.get('description'), "keyword": challenge.get('keyword'), "type": "progress" if challenge.get("progressGoal") else "simple"}
+                prompt_challenge = {
+                    "challengeId": challenge.get('challengeId'), "description": challenge.get('description'),
+                    "keyword": challenge.get('keyword'), "type": "progress" if challenge.get("progressGoal") else "simple"
+                }
                 active_challenges_prompt.append(prompt_challenge)
         
         prompt = AI_ANALYSIS_PROMPT.replace('{active_challenges_placeholder}', json.dumps(active_challenges_prompt))
@@ -287,15 +288,16 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
             try:
                 client_instance = genai.Client(api_key=api_key)
                 gemini_file_resource = client_instance.files.upload(file=temp_local_path)
-                while gemini_file_resource.state.name == "PROCESSING": time.sleep(10); gemini_file_resource = client_instance.files.get(name=gemini_file_resource.name)
+                while gemini_file_resource.state.name == "PROCESSING":
+                    time.sleep(10); gemini_file_resource = client_instance.files.get(name=gemini_file_resource.name)
                 if gemini_file_resource.state.name == "FAILED": raise Exception("Gemini File API failed.")
-                response = client_instance.models.generate_content("gemini-1.5-flash", [gemini_file_resource, prompt])
+                response = client_instance.models.generate_content(model="gemini-2.5-flash", contents=[gemini_file_resource, prompt])
                 analysis_result_str = response.text
                 break
             except Exception as e:
                 logging.warning(f"Gemini key failed: {e}. Trying next...")
-                if gemini_file_resource: 
-                    try: client_instance.files.delete(name=gemini_file_resource.name) 
+                if gemini_file_resource:
+                    try: client_instance.files.delete(name=gemini_file_resource.name)
                     except: pass
                 gemini_file_resource = None; continue
         if not analysis_result_str: raise Exception("All Gemini API keys failed.")
@@ -321,7 +323,7 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         upload_ref.update({'status': 'FAILED', 'errorMessage': str(e)})
         failed_doc = upload_ref.get()
         if failed_doc.exists: send_fcm_data_notification(failed_doc)
-        if source_blob.exists(): 
+        if source_blob.exists():
             try: 
                 failed_blob = bucket.blob(f"failed/{gcs_filename}")
                 failed_blob.upload_from_string(source_blob.download_as_string(), content_type=source_blob.content_type)
@@ -329,7 +331,7 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
             except Exception as move_e: logging.error(f"Failed to move failed file: {move_e}")
             raise self.retry(exc=e)
     finally:
-        if gemini_file_resource: 
+        if gemini_file_resource:
             try: client_instance.files.delete(name=gemini_file_resource.name) 
             except: pass
         if os.path.exists(temp_local_path): os.remove(temp_local_path)
