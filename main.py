@@ -4,18 +4,16 @@ from flask import Flask, jsonify
 from dotenv import load_dotenv
 import firebase_admin
 from pydantic import ValidationError
+from celery import Celery
 
 from logging_config import setup_logging
-# Import the shared celery_app instance
-from celery_worker import celery_app
+from celery_worker import celery_app # Import the shared celery_app instance
 
 # --- SETUP & CONFIG ---
 setup_logging()
 load_dotenv()
 firebase_admin.initialize_app()
 app = Flask(__name__)
-
-# Update the Celery app with the Flask app config
 celery_app.conf.update(app.config)
 
 # --- Import and Register Blueprints ---
@@ -24,14 +22,17 @@ from api.onboarding import onboarding_bp
 from api.social import social_bp
 from api.gamification import gamification_bp
 from api.core import core_bp
-from api.status import status_bp
+from api.admin import admin_bp # <-- IMPORT the new admin blueprint
+
+# Unregister the old status_bp if it was there
+# app.register_blueprint(status_bp, url_prefix='/') 
 
 app.register_blueprint(auth_bp, url_prefix='/')
 app.register_blueprint(onboarding_bp, url_prefix='/onboarding')
 app.register_blueprint(social_bp, url_prefix='/friends')
 app.register_blueprint(gamification_bp, url_prefix='/')
 app.register_blueprint(core_bp, url_prefix='/')
-app.register_blueprint(status_bp, url_prefix='/')
+app.register_blueprint(admin_bp, url_prefix='/') # <-- REGISTER the new admin blueprint
 
 # --- Global Error Handlers ---
 @app.errorhandler(ValidationError)
@@ -49,9 +50,7 @@ def internal_server_error(e):
     logging.critical(f"An unhandled exception occurred: {e}", exc_info=True)
     return jsonify(error_code="INTERNAL_SERVER_ERROR", message="An unexpected error occurred on the server."), 500
 
-
 # --- SERVER STARTUP LOGIC ---
-# This block runs once when the Flask application starts.
 with app.app_context():
     logging.info("Server starting up. Checking for active challenges...")
     
@@ -77,7 +76,5 @@ with app.app_context():
     else:
         logging.info("Active challenges found. Startup check complete.")
 
-# This is for running the app directly with `python main.py` for local development.
-# Gunicorn will not use this block.
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080, debug=True)

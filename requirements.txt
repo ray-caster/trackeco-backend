@@ -2,7 +2,7 @@ Flask
 gunicorn
 python-dotenv
 Werkzeug
-
+gevent 
 # Google Cloud and Firebase
 google-cloud-storage
 google-cloud-firestore
@@ -14,6 +14,7 @@ firebase-admin
 # Background Tasks (Celery & Redis)
 celery
 redis
+
 
 # AI and Media
 google-genai
