@@ -21,7 +21,7 @@ try:
         raise FileNotFoundError(f"Service account key not found at path: {SERVICE_ACCOUNT_FILE}")
 
     # Create credential object
-    creds = credentials.Certificate(SERVICE_ACCOUNT_FILE)
+    creds = firebase_admin.credentials.Certificate(SERVICE_ACCOUNT_FILE)
     # Initialize Firebase with these specific credentials
     firebase_admin.initialize_app(creds)
     logging.info("Firebase Admin SDK initialized successfully with explicit credentials.")
@@ -66,18 +66,25 @@ def internal_server_error(e):
     return jsonify(error_code="INTERNAL_SERVER_ERROR", message="An unexpected error occurred on the server."), 500
 
 # --- SERVER STARTUP LOGIC ---
-with app.app_context():
-    logging.info("Server starting up. Checking for active challenges...")
+def run_initial_setup():
+    """
+    Checks if active challenges exist and generates the default set if not.
+    This should be run once during deployment or manually when needed.
+    """
+    logging.info("Running initial setup. Checking for active challenges...")
     
-    # Import dependencies only within the app context
-    from google.cloud import firestore
-    from challenge_generator import generate_challenge_set
+    # We must explicitly initialize the client in a standalone script
+    db = firestore.Client() 
     
-    db = firestore.Client()
     query = db.collection('challenges').where(filter=firestore.FieldFilter('isActive', '==', True)).limit(1)
     
-    if not list(query.stream()):
-        logging.warning("No active challenges found on startup. Generating full default set.")
+    # Check if the query returns any results
+    if list(query.stream()):
+        logging.info("Active challenges already exist. No action needed.")
+        print("Active challenges already exist. Setup complete.")
+    else:
+        logging.warning("No active challenges found. Generating full default set...")
+        print("No active challenges found. Generating...")
         try:
             # Generate 3 daily challenges (2 simple, 1 progress)
             generate_challenge_set('daily', simple_count=2, progress_count=1)
@@ -86,10 +93,7 @@ with app.app_context():
             # Generate 2 monthly challenges (1 simple, 1 progress)
             generate_challenge_set('monthly', simple_count=1, progress_count=1)
             logging.info("Default challenges generated successfully.")
+            print("Default challenges generated successfully.")
         except Exception as e:
-            logging.error(f"Failed to generate default challenges on startup: {e}", exc_info=True)
-    else:
-        logging.info("Active challenges found. Startup check complete.")
-
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080, debug=True)
+            logging.error(f"Failed to generate default challenges during setup: {e}", exc_info=True)
+            print(f"ERROR: Failed to generate default challenges. Check logs. Error: {e}")
