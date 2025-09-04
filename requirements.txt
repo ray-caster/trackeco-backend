@@ -1,0 +1,32 @@
+Flask
+gunicorn
+python-dotenv
+Werkzeug
+
+# Google Cloud and Firebase
+google-cloud-storage
+google-cloud-firestore
+google-cloud-tasks
+google-auth
+google-auth-oauthlib
+firebase-admin
+
+# Background Tasks (Celery & Redis)
+celery
+redis
+
+# AI and Media
+google-genai
+Pillow
+
+# Data Validation and Utilities
+pydantic
+pydantic[email]
+pytz
+
+# Authentication & Security
+PyJWT
+Werkzeug
+
+# Email Service
+sib-api-v3-sdk
