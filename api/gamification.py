@@ -37,60 +37,53 @@ def get_profile(user_id):
 @gamification_bp.route('/leaderboard', methods=['GET'])
 @token_required
 def get_leaderboard(user_id):
-    cache_key = "leaderboard_cache"
+    cache_key = "leaderboard_top_100"
+    
+    # --- Fetch Top 100 (Cache or Firestore) ---
+    leaderboard_page = None
     if redis_client:
         cached_leaderboard = redis_client.get(cache_key)
         if cached_leaderboard:
-            # We still need to fetch the user's rank as it's dynamic
-            user_ref = db.collection('users').document(user_id)
-            user_doc = user_ref.get()
-            my_rank_entry = None
-            if user_doc.exists:
-                user_data = user_doc.to_dict()
-                user_points = user_data.get('totalPoints', 0)
-                rank = "-"
-                if user_points > 0:
-                    query_greater = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", user_points))
-                    rank = len(list(query_greater.stream())) + 1
-                my_rank_entry = {"rank": rank, "displayName": user_data.get("displayName", "Anonymous"),"userId": user_id, "totalPoints": int(user_points), "isCurrentUser": True}
-            
-            response_data = json.loads(cached_leaderboard)
-            response_data['myRank'] = my_rank_entry
-            return jsonify(response_data), 200
-    
-    # --- Cache Miss ---
+            leaderboard_page = json.loads(cached_leaderboard)
+
+    if leaderboard_page is None:
+        query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING).limit(100)
+        leaderboard_page = []
+        for i, doc in enumerate(query.stream()):
+            user = doc.to_dict()
+            entry = {
+                "rank": i + 1,
+                "displayName": user.get("displayName", "Anonymous"),
+                "totalPoints": int(user.get("totalPoints", 0)),
+                "userId": user.get("userId"),
+                "docId": doc.id # For pagination
+            }
+            leaderboard_page.append(entry)
+        if redis_client:
+            redis_client.set(cache_key, json.dumps(leaderboard_page), ex=600)
+
+    # --- NEW: Fetch "My Rank" with a simple document read ---
+    my_rank_entry = None
     user_ref = db.collection('users').document(user_id)
     user_doc = user_ref.get()
-    my_rank_entry = None
     if user_doc.exists:
         user_data = user_doc.to_dict()
-        user_points = user_data.get('totalPoints', 0)
-        rank = "-"
-        if user_points > 0:
-            query_greater = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", user_points))
-            rank = len(list(query_greater.stream())) + 1
-        my_rank_entry = {"rank": rank, "displayName": user_data.get("displayName", "Anonymous"), "userId": user_id, "totalPoints": int(user_points), "isCurrentUser": True}
-
-    # Fetch top 100 for the general leaderboard
-    query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING).limit(100)
-    leaderboard_page = []
-    for i, doc in enumerate(query.stream()):
-        user = doc.to_dict()
-        entry = {
-            "rank": i + 1,
-            "displayName": user.get("displayName", "Anonymous"),
-            "userId": user.get("userId"),
-            "totalPoints": int(user.get("totalPoints", 0)),
-            "isCurrentUser": user.get("userId") == user_id,
+        # The rank is now pre-calculated and read directly from the user's document.
+        # This is extremely fast and scalable.
+        my_rank_entry = {
+            "rank": user_data.get("rank", "-"), # Use the pre-calculated rank
+            "displayName": user_data.get("displayName", "Anonymous"), 
+            "totalPoints": int(user_data.get("totalPoints", 0)), 
+            "isCurrentUser": True,
+            "userId": user_data.get("userId"),
+            "docId": user_doc.id
         }
-        leaderboard_page.append(entry)
-    
-    response_data = {"myRank": my_rank_entry, "leaderboardPage": leaderboard_page}
-    
-    if redis_client:
-        # Cache only the general page, myRank is always dynamic
-        redis_client.set(cache_key, json.dumps({"leaderboardPage": leaderboard_page}), ex=600)
+            
+    # Add the isCurrentUser flag to the main list
+    for entry in leaderboard_page:
+        entry["isCurrentUser"] = entry.get("userId") == user_id
 
+    response_data = {"myRank": my_rank_entry, "leaderboardPage": leaderboard_page}
     return jsonify(response_data), 200
 
 
