@@ -29,12 +29,6 @@ def onboarding_profile(user_id):
     except ValueError as e: return jsonify({"error_code": "USERNAME_TAKEN", "message": str(e)}), 409
     except Exception as e: return jsonify({"error_code": "SERVER_ERROR", "message": str(e)}), 500
 
-@onboarding_bp.route('/check-username', methods=['GET'])
-def check_username():
-    username = request.args.get('username', '').lower().strip()
-    if not username: return jsonify({"error": "Username cannot be empty"}), 400
-    return jsonify({"isAvailable": not db.collection('usernames').document(username).get().exists}), 200
-
 @onboarding_bp.route('/survey', methods=['POST'])
 @token_required
 def onboarding_survey(user_id):

@@ -29,13 +29,15 @@ from api.social import social_bp
 from api.gamification import gamification_bp
 from api.core import core_bp
 from api.admin import admin_bp
+from api.users import users_bp
 
-app.register_blueprint(auth_bp, url_prefix='/')
-app.register_blueprint(onboarding_bp, url_prefix='/onboarding')
-app.register_blueprint(social_bp, url_prefix='/friends')
-app.register_blueprint(gamification_bp, url_prefix='/')
-app.register_blueprint(core_bp, url_prefix='/')
-app.register_blueprint(admin_bp, url_prefix='/')
+app.register_blueprint(auth_bp, url_prefix='/', strict_slashes=False    )
+app.register_blueprint(onboarding_bp, url_prefix='/onboarding', strict_slashes=False)
+app.register_blueprint(social_bp, url_prefix='/friends', strict_slashes=False)
+app.register_blueprint(gamification_bp, url_prefix='/', strict_slashes=False)
+app.register_blueprint(core_bp, url_prefix='/', strict_slashes=False)
+app.register_blueprint(admin_bp, url_prefix='/', strict_slashes=False)
+app.register_blueprint(users_bp, url_prefix='/users')
 
 # --- Global Error Handlers ---
 @app.errorhandler(ValidationError)

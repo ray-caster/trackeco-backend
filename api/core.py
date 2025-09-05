@@ -4,7 +4,7 @@ import datetime
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 
-from .pydantic_models import InitiateUploadRequest, UploadCompleteRequest
+from .pydantic_models import InitiateUploadRequest, UploadCompleteRequest, FcmTokenUpdateRequest
 from .config import db, storage_client, tasks_client, GCP_PROJECT_ID, GCP_QUEUE_LOCATION, GCP_QUEUE_ID, WORKER_TARGET_URL, GCS_BUCKET_NAME
 from .auth import token_required
 
@@ -115,6 +115,27 @@ def get_history(user_id):
         
     return jsonify(results), 200
 
+@core_bp.route('/users/update-fcm-token', methods=['POST'])
+@token_required
+def update_fcm_token(user_id):
+    """
+    Updates the FCM token for the currently authenticated user.
+    """
+    try:
+        req_data = FcmTokenUpdateRequest.model_validate(request.get_json())
+        user_ref = db.collection('users').document(user_id)
+        
+        # We also update the fcmToken in the main user document now
+        user_ref.update({
+            "fcmToken": req_data.fcmToken
+        })
+        
+        logging.info(f"Successfully updated FCM token for user {user_id}")
+        return jsonify({"message": "Token updated successfully"}), 200
+    except Exception as e:
+        logging.error(f"Failed to update FCM token for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Server error while updating token"}), 500
+    
 def health_check():
     """
     Performs a non-destructive health check for the core module.

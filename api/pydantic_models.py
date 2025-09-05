@@ -52,3 +52,6 @@ class ContactHashesRequest(BaseModel):
 class TeamUpRequest(BaseModel):
     challengeId: str
     inviteeIds: list[str]
+
+class FcmTokenUpdateRequest(BaseModel):
+    fcmToken: str

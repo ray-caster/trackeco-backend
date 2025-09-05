@@ -78,39 +78,6 @@ def get_all_friend_data(user_id):
         "receivedRequests": received_requests
     }), 200
 
-# --- Endpoints ---
-@social_bp.route('/users/search', methods=['GET'])
-@token_required
-def search_users(user_id):
-    query_str = request.args.get('q', '').lower().strip()
-    if not query_str or len(query_str) < 3: 
-        return jsonify([]), 200
-    
-    results, found_ids = [], set()
-    
-    # 1. Exact username match (fastest lookup)
-    username_doc = db.collection('usernames').document(query_str).get()
-    if username_doc.exists:
-        match_user_id = username_doc.to_dict().get('userId')
-        if match_user_id and match_user_id != user_id:
-            user_res = db.collection('users').document(match_user_id).get()
-            if user_res.exists:
-                user = user_res.to_dict()
-                results.append({"userId": user['userId'], "displayName": user.get('displayName'), "username": user.get('username')})
-                found_ids.add(user['userId'])
-
-    # 2. Prefix search on display name (slower, for discovery)
-    # This requires a composite index on (displayName ASC)
-    query = db.collection('users').order_by('displayName').start_at([query_str]).end_at([query_str + '\uf8ff']).limit(10)
-    for doc in query.stream():
-        user = doc.to_dict()
-        user_id_from_doc = user.get('userId')
-        if user_id_from_doc and user_id_from_doc not in found_ids and user_id_from_doc != user_id:
-            results.append({"userId": user['userId'], "displayName": user.get('displayName'), "username": user.get('username')})
-            found_ids.add(user_id_from_doc)
-            
-    return jsonify(results), 200
-
 @social_bp.route('/request', methods=['POST'])
 @token_required
 def send_friend_request(user_id):
