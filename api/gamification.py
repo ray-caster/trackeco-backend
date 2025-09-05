@@ -69,7 +69,7 @@ def get_leaderboard(user_id):
         if user_points > 0:
             query_greater = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", user_points))
             rank = len(list(query_greater.stream())) + 1
-        my_rank_entry = {"rank": rank, "email": user_data.get("displayName", "Anonymous"), "totalPoints": user_points, "isCurrentUser": True}
+        my_rank_entry = {"rank": rank, "displayName": user_data.get("displayName", "Anonymous"), "totalPoints": user_points, "isCurrentUser": True}
 
     # Fetch top 100 for the general leaderboard
     query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING).limit(100)
@@ -78,7 +78,7 @@ def get_leaderboard(user_id):
         user = doc.to_dict()
         entry = {
             "rank": i + 1,
-            "email": user.get("displayName", "Anonymous"),
+            "displayName": user.get("displayName", "Anonymous"),
             "totalPoints": user.get("totalPoints", 0),
             "isCurrentUser": user.get("userId") == user_id,
         }
