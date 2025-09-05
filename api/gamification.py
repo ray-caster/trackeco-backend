@@ -55,6 +55,7 @@ def get_leaderboard(user_id):
                 "rank": i + 1,
                 "displayName": user.get("displayName", "Anonymous"),
                 "totalPoints": int(user.get("totalPoints", 0)),
+                "avatarUrl": user.get("avatarUrl"),
                 "userId": user.get("userId"),
                 "docId": doc.id
             }
@@ -86,6 +87,7 @@ def get_leaderboard(user_id):
             "rank": real_time_rank,
             "displayName": user_data.get("displayName", "Anonymous"), 
             "totalPoints": int(user_points), 
+            "avatarUrl": user_data.get("avatarUrl"),
             "isCurrentUser": True,
             "userId": user_data.get("userId"),
             "docId": user_doc.id
