@@ -4,7 +4,7 @@ from google.cloud import firestore
 
 from .config import db, redis_client
 from .auth import token_required
-
+from .pydantic_models import TeamUpRequest
 gamification_bp = Blueprint('gamification_bp', __name__)
 
 @gamification_bp.route('/profile', methods=['GET'])
@@ -13,11 +13,11 @@ def get_profile(user_id):
     user_ref = db.collection('users').document(user_id)
     user = user_ref.get()
     if not user.exists:
-        # Return a default profile object if user doc doesn't exist
         return jsonify({
             "totalPoints": 0, "currentStreak": 0, "maxStreak": 0,
             "completedChallengeIds": [], "challengeProgress": {},
-            "referralCode": "N/A", "onboardingComplete": False
+            "referralCode": "N/A", "onboardingComplete": False,
+            "activeTeamChallenges": [] # Also return for non-existent user
         }), 200
     
     user_data = user.to_dict()
@@ -28,7 +28,8 @@ def get_profile(user_id):
         "completedChallengeIds": user_data.get("completedChallengeIds", []),
         "challengeProgress": user_data.get("challengeProgress", {}),
         "referralCode": user_data.get("referralCode", "N/A"),
-        "onboardingComplete": user_data.get("onboardingComplete", False)
+        "onboardingComplete": user_data.get("onboardingComplete", False),
+        "activeTeamChallenges": user_data.get("activeTeamChallenges", []) # Add this field
     }
     return jsonify(profile_data), 200
 
@@ -109,6 +110,50 @@ def get_challenges():
         redis_client.set(cache_key, json.dumps(active_challenges, default=str), ex=3600)
         
     return jsonify(active_challenges), 200
+
+
+@gamification_bp.route('/challenges/team-up', methods=['POST'])
+@token_required
+def team_up_on_challenge(user_id):
+    req_data = TeamUpRequest.model_validate(request.get_json())
+    
+    original_challenge_ref = db.collection('challenges').document(req_data.challengeId)
+    original_challenge = original_challenge_ref.get()
+    if not original_challenge.exists:
+        return jsonify({"error": "Original challenge not found"}), 404
+    
+    challenge_data = original_challenge.to_dict()
+    if not challenge_data.get('isTeamUpEligible'):
+        return jsonify({"error": "This challenge is not eligible for teams."}), 400
+
+    team_challenge_id = str(uuid.uuid4())
+    team_challenge_ref = db.collection('teamChallenges').document(team_challenge_id)
+    
+    members = list(set([user_id] + req_data.inviteeIds))
+    
+    team_challenge_data = {
+        "teamChallengeId": team_challenge_id,
+        "originalChallengeId": req_data.challengeId,
+        "challengeType": challenge_data.get('type'),
+        "keyword": challenge_data.get('keyword'),
+        "progressGoal": challenge_data.get('progressGoal'),
+        "bonusPoints": challenge_data.get('bonusPoints'),
+        "description": challenge_data.get('description'),
+        "members": members,
+        "hostId": user_id,
+        "currentProgress": 0,
+        "status": "active",
+        "expiresAt": challenge_data.get('expiresAt')
+    }
+    team_challenge_ref.set(team_challenge_data)
+
+    batch = db.batch()
+    for member_id in members:
+        user_ref = db.collection('users').document(member_id)
+        batch.update(user_ref, {'activeTeamChallenges': firestore.ArrayUnion([team_challenge_id])})
+    batch.commit()
+
+    return jsonify(team_challenge_data), 201
 
 def health_check():
     """

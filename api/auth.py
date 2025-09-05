@@ -17,14 +17,11 @@ from .config import db, JWT_SECRET_KEY, ANDROID_CLIENT_ID
 
 auth_bp = Blueprint('auth_bp', __name__)
 
-
 # --- Helpers ---
 def generate_unique_referral_code():
     """Generates a referral code and guarantees it's unique in the database."""
     while True:
-        # Generate a random 6-character code
         code = ''.join(random.choices('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', k=6))
-        # Check if a document with this ID already exists
         code_ref = db.collection('referral_codes').document(code)
         if not code_ref.get().exists:
             return code
@@ -33,7 +30,6 @@ def generate_unique_referral_code():
 def create_user_and_mapping_transaction(transaction, user_id, email, user_data, attempt_ref):
     user_ref = db.collection('users').document(user_id)
     email_mapping_ref = db.collection('email_mappings').document(email)
-    
     transaction.set(user_ref, user_data)
     transaction.set(email_mapping_ref, {'userId': user_id})
     transaction.delete(attempt_ref)
@@ -69,11 +65,21 @@ def signup():
 
 @auth_bp.route('/verify', methods=['POST'])
 def verify_email():
-    # ... (initial logic for verifying the code is the same) ...
+    req_data = VerifyRequest.model_validate(request.get_json())
+    
+    # FIX: These lines were missing. They fetch the data from Firestore.
+    attempt_ref = db.collection('verification_attempts').document(req_data.email)
+    attempt_doc = attempt_ref.get()
+    if not attempt_doc.exists: return jsonify({"error_code": "NOT_FOUND"}), 404
+    
+    attempt_data = attempt_doc.to_dict()
+    if datetime.datetime.now(datetime.timezone.utc) > attempt_data['expiresAt']:
+        attempt_ref.delete(); return jsonify({"error_code": "EXPIRED_CODE"}), 400
+    
+    # This line will now work correctly because attempt_data is defined.
     if attempt_data['verificationCode'] != req_data.code: return jsonify({"error_code": "INVALID_CODE"}), 400
     
     user_id = str(uuid.uuid4())
-    # FIX: Call the new function to guarantee a unique code
     referral_code = generate_unique_referral_code()
     user_data = {
         'userId': user_id, 'email': req_data.email, 'passwordHash': attempt_data['passwordHash'],
@@ -82,7 +88,6 @@ def verify_email():
     }
     
     create_user_and_mapping_transaction(db.transaction(), user_id, req_data.email, user_data, attempt_ref)
-    # Store the new, unique code in the lookup collection
     db.collection('referral_codes').document(referral_code).set({'userId': user_id})
     
     token = jwt.encode({'user_id': user_id, 'email': req_data.email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEY)
@@ -133,7 +138,6 @@ def auth_google():
     
     user_ref = db.collection('users').document(google_id)
     if not user_ref.get().exists:
-        # FIX: Call the new function to guarantee a unique code
         referral_code = generate_unique_referral_code()
         user_ref.set({
             'userId': google_id, 'email': user_email, 'isVerified': True,
@@ -141,19 +145,14 @@ def auth_google():
             'onboardingStep': 0, 'onboardingComplete': False, 'referralCode': referral_code
         })
         db.collection('email_mappings').document(user_email).set({'userId': google_id})
-        # Store the new, unique code in the lookup collection
         db.collection('referral_codes').document(referral_code).set({'userId': google_id})
         
     app_token = jwt.encode({'user_id': google_id, 'email': user_email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEY)
     return jsonify({"token": app_token}), 200
 
 def health_check():
-    """
-    Performs a non-destructive health check for the auth module.
-    Checks connectivity to required Firestore collections.
-    """
+    """Performs a non-destructive health check for the auth module."""
     try:
-        # A simple, low-cost read operation to verify connectivity and permissions.
         _ = list(db.collection('users').limit(1).stream())
         _ = list(db.collection('email_mappings').limit(1).stream())
         _ = list(db.collection('verification_attempts').limit(1).stream())
