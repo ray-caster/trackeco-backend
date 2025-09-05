@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify
 
 from .config import db
 from .auth import token_required # We still need the decorator
+from pydantic_models import FcmTokenUpdateRequest
 
 users_bp = Blueprint('users_bp', __name__)
 
@@ -43,3 +44,24 @@ def check_username():
     username = request.args.get('username', '').lower().strip()
     if not username: return jsonify({"error": "Username cannot be empty"}), 400
     return jsonify({"isAvailable": not db.collection('usernames').document(username).get().exists}), 200
+
+@users_bp.route('/update-fcm-token', methods=['POST'])
+@token_required
+def update_fcm_token(user_id):
+    """
+    Updates the FCM token for the currently authenticated user.
+    """
+    try:
+        req_data = FcmTokenUpdateRequest.model_validate(request.get_json())
+        user_ref = db.collection('users').document(user_id)
+        
+        # We also update the fcmToken in the main user document now
+        user_ref.update({
+            "fcmToken": req_data.fcmToken
+        })
+        
+        logging.info(f"Successfully updated FCM token for user {user_id}")
+        return jsonify({"message": "Token updated successfully"}), 200
+    except Exception as e:
+        logging.error(f"Failed to update FCM token for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Server error while updating token"}), 500

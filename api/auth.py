@@ -3,7 +3,7 @@ import uuid
 import datetime
 import random
 from functools import wraps
-
+import hashlib
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 from google.oauth2 import id_token
@@ -88,6 +88,8 @@ def verify_email():
     }
     
     create_user_and_mapping_transaction(db.transaction(), user_id, req_data.email, user_data, attempt_ref)
+    email_hash = hashlib.sha256(req_data.email.encode('utf-8')).hexdigest()
+    db.collection('email_hashes').document(email_hash).set({'userId': user_id})
     db.collection('referral_codes').document(referral_code).set({'userId': user_id})
     
     token = jwt.encode({'user_id': user_id, 'email': req_data.email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEY)
@@ -146,6 +148,8 @@ def auth_google():
         })
         db.collection('email_mappings').document(user_email).set({'userId': google_id})
         db.collection('referral_codes').document(referral_code).set({'userId': google_id})
+        email_hash = hashlib.sha256(user_email.encode('utf-8')).hexdigest()
+        db.collection('email_hashes').document(email_hash).set({'userId': google_id})
         
     app_token = jwt.encode({'user_id': google_id, 'email': user_email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEY)
     return jsonify({"token": app_token}), 200

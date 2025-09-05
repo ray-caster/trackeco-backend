@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import messaging
 import pytz
-
+import redis
 from logging_config import setup_logging
 from api.prompts import AI_ANALYSIS_PROMPT # Import the prompt from the central file
 

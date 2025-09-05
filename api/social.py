@@ -132,17 +132,18 @@ def remove_friend(user_id):
     
     return jsonify({"message": "Friend removed."}), 200
     
-@social_bp.route('/find-by-contacts', methods=['POST'])
+@social_bp.route('/find-by-emails', methods=['POST']) # Endpoint renamed for clarity
 @token_required
-def find_by_contacts(user_id):
+def find_by_emails(user_id):
+    # The request model can be reused, it just contains a list of hashes
     req_data = ContactHashesRequest.model_validate(request.get_json())
     if not req_data.hashes: return jsonify([]), 200
     
     matching_user_ids = set()
-    # Firestore 'in' query is limited to 30 items, so we process in chunks
     for i in range(0, len(req_data.hashes), 30):
         chunk = req_data.hashes[i:i+30]
-        query = db.collection('contact_hashes').where(filter=firestore.FieldFilter.from_document_id("in", chunk))
+        # FIX: Query the correct 'email_hashes' collection
+        query = db.collection('email_hashes').where(filter=firestore.FieldFilter.from_document_id("in", chunk))
         for doc in query.stream():
             uid = doc.to_dict().get('userId')
             if uid and uid != user_id:
@@ -150,19 +151,6 @@ def find_by_contacts(user_id):
 
     if not matching_user_ids:
         return jsonify([]), 200
-
-    # Now fetch the profiles for the matched user IDs using another 'in' query
-    # (also chunked for safety)
-    final_results = []
-    user_id_list = list(matching_user_ids)
-    for i in range(0, len(user_id_list), 30):
-        chunk = user_id_list[i:i+30]
-        user_query = db.collection('users').where(filter=firestore.FieldFilter("userId", "in", chunk))
-        for doc in user_query.stream():
-            user = doc.to_dict()
-            final_results.append({"userId": user.get('userId'), "displayName": user.get('displayName'), "username": user.get('username')})
-
-    return jsonify(final_results), 200
 
 # --- HEALTH CHECK ---
 def health_check():
