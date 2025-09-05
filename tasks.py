@@ -13,7 +13,8 @@ import pytz
 import redis
 from logging_config import setup_logging
 from api.prompts import AI_ANALYSIS_PROMPT # Import the prompt from the central file
-
+from PIL import Image      # For image processing
+from io import BytesIO
 # --- SETUP & CONFIG ---
 setup_logging()
 load_dotenv()
@@ -98,7 +99,7 @@ def process_avatar_image(gcs_path, user_id):
         source_blob.delete()
     except Exception as e:
         logging.error(f"Failed to process avatar for user {user_id}: {e}", exc_info=True)
-        
+
 @celery_app.task(name="award_bonus_points_task")
 def award_bonus_points(user_id, amount, reason):
     """A separate task to award points to a user."""
