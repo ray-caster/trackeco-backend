@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify
 
 from .config import db
 from .auth import token_required # We still need the decorator
-from pydantic_models import FcmTokenUpdateRequest
+from .pydantic_models import FcmTokenUpdateRequest
 
 users_bp = Blueprint('users_bp', __name__)
 
