@@ -1,87 +1,59 @@
 import os
 from io import BytesIO
-from google.cloud import storage
+from google.cloud import firestore, storage
 from PIL import Image
 
-# Initialize clients once per instance
+# Initialize clients globally for re-use between function invocations
 storage_client = storage.Client()
-THUMB_SIZE = (128, 128)
-PROFILE_SIZE = (512, 512)
+db = firestore.Client()
 
-def resize_avatar(data, context):
+def resize_and_store_image(event, context):
     """
-    Cloud Function triggered by a Cloud Storage event.
-    Resizes a newly uploaded user avatar into multiple sizes.
+    Triggered by a new file upload to GCS. It resizes the image,
+    saves it to a public folder, and updates the user's profile in Firestore.
     """
-    bucket_name = data['bucket']
-    filename = data['name']
+    file_data = event
+    bucket_name = file_data['bucket']
+    file_name = file_data['name']
+
+    # Ensure we only process files from the original avatars folder
+    if not file_name.startswith('avatars_original/'):
+        return
+
+    # Extract the user ID from the filename (e.g., 'avatars_original/some_user_id.jpg')
+    user_id = os.path.splitext(os.path.basename(file_name))[0]
     
-    print(f"Processing file: {filename} from bucket: {bucket_name}.")
-
-    # --- Pre-computation checks to avoid errors and recursive triggers ---
-    # Ensure the event is not from a file deletion
-    if context.event_type == 'google.storage.object.delete':
-        print(f"Ignoring delete event for file: {filename}")
-        return
-
-    # Ensure we don't process already processed files to prevent loops
-    if 'processed/avatars/' in filename:
-        print(f"Ignoring already processed file: {filename}")
-        return
-
-    # Ensure the file is in the expected directory for original uploads
-    parts = filename.split('/')
-    if len(parts) < 2 or parts[0] != 'avatars_original':
-        print(f"Ignoring file not in 'avatars_original/' directory: {filename}")
-        return
-        
-    user_id = parts[1]
-    print(f"Identified user ID: {user_id}")
-
-    # --- Image Processing ---
     bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(filename)
+    blob = bucket.blob(file_name)
     
-    # Check if the blob exists before proceeding
-    if not blob.exists():
-        print(f"Blob {filename} no longer exists. Exiting.")
-        return
+    # Download the image into memory
+    image_bytes = blob.download_as_bytes()
+    
+    # Open the image with Pillow
+    with Image.open(BytesIO(image_bytes)) as img:
+        # Resize to a 256x256 thumbnail
+        img.thumbnail((256, 256))
+        
+        # Convert to WebP format in memory
+        output_buffer = BytesIO()
+        img.save(output_buffer, format='WEBP', quality=85)
+        output_buffer.seek(0)
 
-    try:
-        with BytesIO(blob.download_as_bytes()) as in_mem_file:
-            image = Image.open(in_mem_file)
-            
-            # Convert to RGB to handle formats like PNG with alpha channels gracefully
-            if image.mode not in ('RGB', 'L'):
-                image = image.convert('RGB')
-            
-            # 1. Generate and upload Thumbnail
-            thumb = image.copy()
-            thumb.thumbnail(THUMB_SIZE)
-            thumb_blob_name = f"processed/avatars/{user_id}/thumb.jpg"
-            thumb_blob = bucket.blob(thumb_blob_name)
-            with BytesIO() as out_mem_file:
-                thumb.save(out_mem_file, format='JPEG', quality=85)
-                thumb_blob.upload_from_string(out_mem_file.getvalue(), content_type='image/jpeg')
-                thumb_blob.make_public()
-            print(f"Generated and uploaded thumbnail to {thumb_blob_name}")
+    # Define the path for the new processed avatar
+    processed_blob_name = f"avatars_processed/{user_id}.webp"
+    dest_blob = bucket.blob(processed_blob_name)
+    
+    # Upload the resized image
+    dest_blob.upload_from_file(output_buffer, content_type='image/webp')
+    
+    # Make the processed image publicly readable
+    dest_blob.make_public()
+    
+    # Update the user's document in Firestore with the new public URL
+    user_ref = db.collection('users').document(user_id)
+    user_ref.update({'avatarUrl': dest_blob.public_url})
+    
+    print(f"Successfully resized and updated avatar for user: {user_id}")
 
-            # 2. Generate and upload Profile Size
-            profile_img = image.copy()
-            profile_img.thumbnail(PROFILE_SIZE)
-            profile_blob_name = f"processed/avatars/{user_id}/profile.jpg"
-            profile_blob = bucket.blob(profile_blob_name)
-            with BytesIO() as out_mem_file:
-                profile_img.save(out_mem_file, format='JPEG', quality=90)
-                profile_blob.upload_from_string(out_mem_file.getvalue(), content_type='image/jpeg')
-                profile_blob.make_public()
-            print(f"Generated and uploaded profile image to {profile_blob_name}")
-                
-        # 3. Clean up the original large file
-        blob.delete()
-        print(f"Successfully processed and deleted original avatar: {filename}")
-
-    except Exception as e:
-        print(f"ERROR: Failed to process image {filename}. Error: {e}")
-        failed_blob_name = f"failed/avatars/{filename}"
-        bucket.rename_blob(blob, new_name=failed_blob_name)
+    # Optional: Delete the original high-resolution image to save costs
+    blob.delete()

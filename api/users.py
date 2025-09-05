@@ -1,11 +1,35 @@
 # In api/users.py
 from flask import Blueprint, request, jsonify
-
+import datetime
 from .config import db
 from .auth import token_required # We still need the decorator
-from .pydantic_models import FcmTokenUpdateRequest
-
+from .pydantic_models import FcmTokenUpdateRequest, AvatarUploadRequest
 users_bp = Blueprint('users_bp', __name__)
+
+@users_bp.route('/initiate-avatar-upload', methods=['POST'])
+@token_required
+def initiate_avatar_upload(user_id):
+    """
+    Generates a V4 signed URL for a user to upload their avatar directly to GCS.
+    """
+    req_data = AvatarUploadRequest.model_validate(request.get_json())
+    
+    # The GCS filename for an avatar is always the user's ID to ensure uniqueness
+    # and make it easy for the cloud function to find the user document.
+    gcs_filename = f"{user_id}.{req_data.fileExtension}"
+    blob_path = f"avatars_original/{gcs_filename}"
+    
+    bucket = storage_client.bucket(GCS_BUCKET_NAME)
+    blob = bucket.blob(blob_path)
+
+    signed_url = blob.generate_signed_url(
+        version="v4",
+        expiration=datetime.timedelta(minutes=10),
+        method="PUT",
+        content_type=req_data.contentType
+    )
+    
+    return jsonify({"upload_url": signed_url}), 200
 
 @users_bp.route('/search', methods=['GET'])
 @token_required

@@ -55,3 +55,7 @@ class TeamUpRequest(BaseModel):
 
 class FcmTokenUpdateRequest(BaseModel):
     fcmToken: str
+
+class AvatarUploadRequest(BaseModel):
+    contentType: str
+    fileExtension: str
