@@ -228,9 +228,23 @@ if __name__ == '__main__':
         exit()
 
     print(f"[{datetime.datetime.now()}] Running challenge generator: type='{args.type}', simple={args.simple_count}, progress={args.progress_count}...")
+    lock_key = "lock:challenge_generator"
+    # nx=True means set only if the key does not exist. ex=60 means expire after 60 seconds.
+    is_lock_acquired = redis_client.set(lock_key, "running", ex=60, nx=True)
     
-    results = generate_challenge_set(args.type, args.simple_count, args.progress_count)
-    if results:
-        print(f"[{datetime.datetime.now()}] Success! Created {len(results)} new challenges.")
-    else:
-        print(f"[{datetime.datetime.now()}] Failure. Check log file for details.")
+    if not is_lock_acquired:
+        print(f"[{datetime.datetime.now()}] Challenge generation is already in progress. Exiting.")
+        logging.warning("Challenge generation is already in progress. Exiting.")
+        exit()
+
+    try:
+        print(f"[{datetime.datetime.now()}] Acquired lock. Running challenge generator: type='{args.type}', simple={args.simple_count}, progress={args.progress_count}...")
+        results = generate_challenge_set(args.type, args.simple_count, args.progress_count)
+        if results:
+            print(f"[{datetime.datetime.now()}] Success! Created {len(results)} new challenges.")
+        else:
+            print(f"[{datetime.datetime.now()}] Failure. Check log file for details.")
+    finally:
+        # Always release the lock when done
+        redis_client.delete(lock_key)
+        print(f"[{datetime.datetime.now()}] Released lock.")
