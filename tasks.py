@@ -80,7 +80,7 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
         return (None, False)
 
     user_data = user_doc.to_dict()
-    current_points, new_score = user_data.get('totalPoints', 0), ai_result.get('finalScore', 0.0)
+    current_points, new_score = user_data.get('totalPoints', 0), round(ai_result.get('finalScore', 0.0))
     user_completed_ids = user_data.get('completedChallengeIds', [])
     newly_completed_ids, bonus_points = [], 0
     challenge_progress = user_data.get('challengeProgress', {})
