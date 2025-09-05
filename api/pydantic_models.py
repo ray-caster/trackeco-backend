@@ -59,3 +59,6 @@ class FcmTokenUpdateRequest(BaseModel):
 class AvatarUploadRequest(BaseModel):
     contentType: str
     fileExtension: str
+
+class AvatarUploadCompleteRequest(BaseModel):
+    gcsPath: str

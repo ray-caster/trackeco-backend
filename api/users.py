@@ -1,45 +1,42 @@
 # In api/users.py
 from flask import Blueprint, request, jsonify
 import datetime
-from .config import db,GCS_BUCKET_NAME,storage_client
+from .config import db,GCS_BUCKET_NAME,storage_client, tasks_client
 from .auth import token_required # We still need the decorator
-from .pydantic_models import FcmTokenUpdateRequest, AvatarUploadRequest
+from .pydantic_models import FcmTokenUpdateRequest, AvatarUploadRequest, AvatarUploadCompleteRequest
+from tasks import process_avatar_image # Import the new Celery task
 import logging
 users_bp = Blueprint('users_bp', __name__)
 
 @users_bp.route('/initiate-avatar-upload', methods=['POST'])
 @token_required
 def initiate_avatar_upload(user_id):
-    """
-    Generates a V4 signed URL for an authenticated user to upload their avatar
-    directly to a private folder in Google Cloud Storage.
-    """
-    try:
-        req_data = AvatarUploadRequest.model_validate(request.get_json())
-        
-        # A user's avatar filename is always their user_id to ensure they can only
-        # have one, and to make it easy for the Cloud Function to find their document.
-        # The extension is provided by the client.
-        gcs_filename = f"{user_id}.{req_data.fileExtension}"
-        blob_path = f"avatars_original/{gcs_filename}"
-        
-        bucket = storage_client.bucket(GCS_BUCKET_NAME)
-        blob = bucket.blob(blob_path)
+    """Generates a V4 signed URL for a user to upload their avatar directly to GCS."""
+    req_data = AvatarUploadRequest.model_validate(request.get_json())
+    gcs_filename = f"{user_id}.{req_data.fileExtension}"
+    blob_path = f"avatars_original/{gcs_filename}"
+    bucket = storage_client.bucket(GCS_BUCKET_NAME)
+    blob = bucket.blob(blob_path)
+    signed_url = blob.generate_signed_url(
+        version="v4",
+        expiration=datetime.timedelta(minutes=10),
+        method="PUT",
+        content_type=req_data.contentType
+    )
+    # Return the URL and the path, which the client will need to send back
+    return jsonify({"upload_url": signed_url, "gcs_path": blob_path}), 200
 
-        # Generate a secure, short-lived URL. The client must use the 'PUT' method
-        # and provide the correct 'Content-Type' header for the upload to succeed.
-        signed_url = blob.generate_signed_url(
-            version="v4",
-            expiration=datetime.timedelta(minutes=10), # URL is valid for 10 minutes
-            method="PUT",
-            content_type=req_data.contentType
-        )
-        
-        return jsonify({"upload_url": signed_url}), 200
-
-    except Exception as e:
-        logging.error(f"Error generating signed URL for avatar for user {user_id}: {e}", exc_info=True)
-        return jsonify({"error": "Could not prepare avatar upload."}), 500
+@users_bp.route('/avatar-upload-complete', methods=['POST'])
+@token_required
+def avatar_upload_complete(user_id):
+    """
+    Notified by the client that a direct GCS upload is complete.
+    This endpoint queues the image for processing.
+    """
+    req_data = AvatarUploadCompleteRequest.model_validate(request.get_json())
+    # Queue the background task to process the image
+    process_avatar_image.delay(req_data.gcsPath, user_id)
+    return jsonify({"message": "Avatar processing queued."}), 202
 
 @users_bp.route('/search', methods=['GET'])
 @token_required

@@ -58,6 +58,47 @@ def send_fcm_data_notification(doc_snapshot):
     except Exception as e:
         logging.error(f"Failed to send FCM for {doc_snapshot.id}: {e}", exc_info=True)
 
+@celery_app.task(name="process_avatar_image")
+def process_avatar_image(gcs_path, user_id):
+    logging.info(f"Processing avatar for user {user_id} from path: {gcs_path}")
+    db = get_db()
+    storage_client = get_storage_client()
+    bucket = storage_client.bucket(GCS_BUCKET_NAME)
+    source_blob = bucket.blob(gcs_path)
+
+    try:
+        if not source_blob.exists():
+            logging.error(f"Original avatar not found at {gcs_path} for user {user_id}")
+            return
+
+        image_bytes = source_blob.download_as_bytes()
+        content_type = source_blob.content_type
+
+        with Image.open(BytesIO(image_bytes)) as img:
+            if img.mode in ('RGBA', 'LA'):
+                background = Image.new(img.mode[:-1], img.size, (255, 255, 255))
+                background.paste(img, img.getchannel('A'))
+                img = background
+            
+            img.thumbnail((256, 256))
+            output_buffer = BytesIO()
+            img.convert('RGB').save(output_buffer, "WEBP", quality=85)
+            output_buffer.seek(0)
+            
+        processed_blob_name = f"avatars_processed/{user_id}.webp"
+        dest_blob = bucket.blob(processed_blob_name)
+        
+        dest_blob.upload_from_file(output_buffer, content_type='image/webp')
+        dest_blob.make_public()
+        
+        user_ref = db.collection('users').document(user_id)
+        user_ref.update({'avatarUrl': dest_blob.public_url})
+        
+        logging.info(f"Successfully updated avatar for user: {user_id}")
+        source_blob.delete()
+    except Exception as e:
+        logging.error(f"Failed to process avatar for user {user_id}: {e}", exc_info=True)
+        
 @celery_app.task(name="award_bonus_points_task")
 def award_bonus_points(user_id, amount, reason):
     """A separate task to award points to a user."""
