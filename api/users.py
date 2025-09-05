@@ -1,9 +1,10 @@
 # In api/users.py
 from flask import Blueprint, request, jsonify
 import datetime
-from .config import db
+from .config import db,GCS_BUCKET_NAME,storage_client
 from .auth import token_required # We still need the decorator
 from .pydantic_models import FcmTokenUpdateRequest, AvatarUploadRequest
+import logging
 users_bp = Blueprint('users_bp', __name__)
 
 @users_bp.route('/initiate-avatar-upload', methods=['POST'])
