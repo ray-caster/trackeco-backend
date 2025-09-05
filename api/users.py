@@ -11,26 +11,35 @@ users_bp = Blueprint('users_bp', __name__)
 @token_required
 def initiate_avatar_upload(user_id):
     """
-    Generates a V4 signed URL for a user to upload their avatar directly to GCS.
+    Generates a V4 signed URL for an authenticated user to upload their avatar
+    directly to a private folder in Google Cloud Storage.
     """
-    req_data = AvatarUploadRequest.model_validate(request.get_json())
-    
-    # The GCS filename for an avatar is always the user's ID to ensure uniqueness
-    # and make it easy for the cloud function to find the user document.
-    gcs_filename = f"{user_id}.{req_data.fileExtension}"
-    blob_path = f"avatars_original/{gcs_filename}"
-    
-    bucket = storage_client.bucket(GCS_BUCKET_NAME)
-    blob = bucket.blob(blob_path)
+    try:
+        req_data = AvatarUploadRequest.model_validate(request.get_json())
+        
+        # A user's avatar filename is always their user_id to ensure they can only
+        # have one, and to make it easy for the Cloud Function to find their document.
+        # The extension is provided by the client.
+        gcs_filename = f"{user_id}.{req_data.fileExtension}"
+        blob_path = f"avatars_original/{gcs_filename}"
+        
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(blob_path)
 
-    signed_url = blob.generate_signed_url(
-        version="v4",
-        expiration=datetime.timedelta(minutes=10),
-        method="PUT",
-        content_type=req_data.contentType
-    )
-    
-    return jsonify({"upload_url": signed_url}), 200
+        # Generate a secure, short-lived URL. The client must use the 'PUT' method
+        # and provide the correct 'Content-Type' header for the upload to succeed.
+        signed_url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(minutes=10), # URL is valid for 10 minutes
+            method="PUT",
+            content_type=req_data.contentType
+        )
+        
+        return jsonify({"upload_url": signed_url}), 200
+
+    except Exception as e:
+        logging.error(f"Error generating signed URL for avatar for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Could not prepare avatar upload."}), 500
 
 @users_bp.route('/search', methods=['GET'])
 @token_required
