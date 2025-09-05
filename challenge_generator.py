@@ -27,11 +27,12 @@ try:
     ACTIVE_GEMINI_KEYS = [key for key in GEMINI_API_KEYS if key]
     if not ACTIVE_GEMINI_KEYS:
         raise ValueError("No GEMINI_API_KEY environment variables found.")
+    redis_client = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
+    redis_client.ping()
 except Exception as e:
     logging.critical(f"FATAL: Script setup failed. Error: {e}", exc_info=True)
     exit()
-    redis_client = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
-    redis_client.ping()
+    
 except Exception as e:
     logging.critical(f"FATAL: Challenge generator could not connect to Redis. Error: {e}")
     redis_client = None
