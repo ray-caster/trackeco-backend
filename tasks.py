@@ -132,9 +132,7 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
     return (referrer_id, is_first_upload)
 
 def handle_team_challenge_progress(user_id, ai_result):
-    """Handles updating shared progress on team challenges. Runs AFTER the main transaction."""
     db = get_db()
-    # The new prompt doesn't have `progressUpdate`, it's nested in `challengeUpdates`
     challenge_updates = ai_result.get('challengeUpdates', [])
     if not challenge_updates: return
     
@@ -143,7 +141,6 @@ def handle_team_challenge_progress(user_id, ai_result):
     active_team_ids = user_doc.to_dict().get('activeTeamChallenges', [])
     if not active_team_ids: return
 
-    # Find the relevant progress updates from the AI's response
     progress_updates_map = {p['challengeId']: p['progress'] for p in challenge_updates if 'progress' in p}
     if not progress_updates_map: return
 
@@ -167,6 +164,31 @@ def handle_team_challenge_progress(user_id, ai_result):
                 else:
                     transaction.update(ref, {'currentProgress': new_progress})
             return None
+
+        completed_challenge = update_progress_in_transaction(db.transaction(), team_challenge_ref)
+        
+        if completed_challenge:
+            logging.info(f"Team challenge {team_id} completed!")
+            members_map = completed_challenge.get('members', {})
+            
+            # FIX: Filter for only members who have accepted the invitation
+            accepted_members = [uid for uid, status in members_map.items() if status == "accepted"]
+            member_count = len(accepted_members)
+            
+            if member_count > 0:
+                total_bonus = completed_challenge.get('bonusPoints', 0)
+                # FIX: Divide points among accepted members
+                points_per_member = total_bonus // member_count
+                reason = f"Team Challenge '{completed_challenge.get('description')}'"
+                
+                batch = db.batch()
+                for member_id in accepted_members:
+                    # Award the divided amount
+                    award_bonus_points.delay(member_id, points_per_member, reason)
+                    member_ref = db.collection('users').document(member_id)
+                    batch.update(member_ref, {'activeTeamChallenges': firestore.ArrayRemove([team_id])})
+                batch.commit()
+            break
 
         completed_challenge = update_progress_in_transaction(db.transaction(), team_challenge_ref)
         

@@ -117,9 +117,9 @@ def get_challenges():
 @token_required
 def team_up_on_challenge(user_id):
     req_data = TeamUpRequest.model_validate(request.get_json())
-    
     original_challenge_ref = db.collection('challenges').document(req_data.challengeId)
     original_challenge = original_challenge_ref.get()
+
     if not original_challenge.exists:
         return jsonify({"error": "Original challenge not found"}), 404
     
@@ -130,31 +130,83 @@ def team_up_on_challenge(user_id):
     team_challenge_id = str(uuid.uuid4())
     team_challenge_ref = db.collection('teamChallenges').document(team_challenge_id)
     
-    members = list(set([user_id] + req_data.inviteeIds))
+    # NEW: Create a members map to track invitation status
+    members_map = { user_id: "accepted" } # Host auto-accepts
+    for invitee_id in req_data.inviteeIds:
+        members_map[invitee_id] = "pending"
     
     team_challenge_data = {
-        "teamChallengeId": team_challenge_id,
-        "originalChallengeId": req_data.challengeId,
-        "challengeType": challenge_data.get('type'),
-        "keyword": challenge_data.get('keyword'),
-        "progressGoal": challenge_data.get('progressGoal'),
-        "bonusPoints": challenge_data.get('bonusPoints'),
-        "description": challenge_data.get('description'),
-        "members": members,
-        "hostId": user_id,
-        "currentProgress": 0,
-        "status": "active",
-        "expiresAt": challenge_data.get('expiresAt')
+        "teamChallengeId": team_challenge_id, "originalChallengeId": req_data.challengeId,
+        "description": challenge_data.get('description'), "progressGoal": challenge_data.get('progressGoal'),
+        "bonusPoints": challenge_data.get('bonusPoints'), "hostId": user_id,
+        "members": members_map, "status": "pending", # Status is now 'pending' by default
+        "currentProgress": 0, "expiresAt": challenge_data.get('expiresAt')
     }
     team_challenge_ref.set(team_challenge_data)
 
+    # Add the invitation to each invitee's user document
     batch = db.batch()
-    for member_id in members:
-        user_ref = db.collection('users').document(member_id)
-        batch.update(user_ref, {'activeTeamChallenges': firestore.ArrayUnion([team_challenge_id])})
+    # Add the active challenge to the host's document immediately
+    host_ref = db.collection('users').document(user_id)
+    batch.update(host_ref, {'activeTeamChallenges': firestore.ArrayUnion([team_challenge_id])})
+
+    for invitee_id in req_data.inviteeIds:
+        user_ref = db.collection('users').document(invitee_id)
+        batch.update(user_ref, {'teamChallengeInvitations': firestore.ArrayUnion([team_challenge_id])})
     batch.commit()
 
     return jsonify(team_challenge_data), 201
+
+@gamification_bp.route('/team-challenges/<team_challenge_id>/accept', methods=['POST'])
+@token_required
+def accept_invitation(user_id, team_challenge_id):
+    team_ref = db.collection('teamChallenges').document(team_challenge_id)
+    user_ref = db.collection('users').document(user_id)
+    
+    @firestore.transactional
+    def accept_in_transaction(transaction):
+        team_doc = team_ref.get(transaction=transaction)
+        if not team_doc.exists: return {"error": "Invitation not found."}, 404
+        
+        team_data = team_doc.to_dict()
+        members = team_data.get('members', {})
+        
+        if user_id not in members or members.get(user_id) != "pending":
+            return {"error": "Invalid invitation or you have already responded."}, 400
+
+        # Update user's status in the team document
+        members[user_id] = "accepted"
+        transaction.update(team_ref, {"members": members})
+        
+        # Move from invitations to active challenges for the user
+        transaction.update(user_ref, {
+            "teamChallengeInvitations": firestore.ArrayRemove([team_challenge_id]),
+            "activeTeamChallenges": firestore.ArrayUnion([team_challenge_id])
+        })
+        return {"message": "Invitation accepted."}, 200
+
+    message, status_code = accept_in_transaction(db.transaction())
+    return jsonify(message), status_code
+
+@gamification_bp.route('/team-challenges/<team_challenge_id>/decline', methods=['POST'])
+@token_required
+def decline_invitation(user_id, team_challenge_id):
+    team_ref = db.collection('teamChallenges').document(team_challenge_id)
+    user_ref = db.collection('users').document(user_id)
+
+    # Update team document by removing the member
+    team_doc = team_ref.get()
+    if team_doc.exists:
+        team_data = team_doc.to_dict()
+        members = team_data.get('members', {})
+        if user_id in members:
+            members.pop(user_id)
+            team_ref.update({"members": members})
+
+    # Always remove the invitation from the user's list
+    user_ref.update({"teamChallengeInvitations": firestore.ArrayRemove([team_challenge_id])})
+    
+    return jsonify({"message": "Invitation declined."}), 200
 
 def health_check():
     """
