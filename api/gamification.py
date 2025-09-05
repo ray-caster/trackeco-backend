@@ -56,30 +56,42 @@ def get_leaderboard(user_id):
                 "displayName": user.get("displayName", "Anonymous"),
                 "totalPoints": int(user.get("totalPoints", 0)),
                 "userId": user.get("userId"),
-                "docId": doc.id # For pagination
+                "docId": doc.id
             }
             leaderboard_page.append(entry)
         if redis_client:
             redis_client.set(cache_key, json.dumps(leaderboard_page), ex=600)
 
-    # --- NEW: Fetch "My Rank" with a simple document read ---
+    # --- NEW: Real-time "My Rank" Calculation ---
     my_rank_entry = None
     user_ref = db.collection('users').document(user_id)
     user_doc = user_ref.get()
+
     if user_doc.exists:
         user_data = user_doc.to_dict()
-        # The rank is now pre-calculated and read directly from the user's document.
-        # This is extremely fast and scalable.
+        user_points = user_data.get('totalPoints', 0)
+        
+        # This is the efficient "delta" update. It performs a count query on the server.
+        # This is extremely fast and costs only a single document read, regardless of user count.
+        query_greater = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", user_points))
+        count_agg_query = query_greater.count()
+        query_result = count_agg_query.get()
+        # The result of a count query is a list of lists, so we access the value like this:
+        rank_above = query_result[0][0].value
+        
+        # The user's rank is the number of people above them + 1
+        real_time_rank = rank_above + 1
+        
         my_rank_entry = {
-            "rank": user_data.get("rank", "-"), # Use the pre-calculated rank
+            "rank": real_time_rank,
             "displayName": user_data.get("displayName", "Anonymous"), 
-            "totalPoints": int(user_data.get("totalPoints", 0)), 
+            "totalPoints": int(user_points), 
             "isCurrentUser": True,
             "userId": user_data.get("userId"),
             "docId": user_doc.id
         }
             
-    # Add the isCurrentUser flag to the main list
+    # Add the isCurrentUser flag to the main Top 100 list
     for entry in leaderboard_page:
         entry["isCurrentUser"] = entry.get("userId") == user_id
 
