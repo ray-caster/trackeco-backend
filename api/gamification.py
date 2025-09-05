@@ -64,7 +64,7 @@ def get_leaderboard(user_id):
     my_rank_entry = None
     if user_doc.exists:
         user_data = user_doc.to_dict()
-        user_points = user_data.get('totalPoints', 0)
+        user_points = user_data.get('totalPoints', 0)a
         rank = "-"
         if user_points > 0:
             query_greater = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", user_points))
