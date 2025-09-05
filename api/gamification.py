@@ -52,7 +52,7 @@ def get_leaderboard(user_id):
                 if user_points > 0:
                     query_greater = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", user_points))
                     rank = len(list(query_greater.stream())) + 1
-                my_rank_entry = {"rank": rank, "email": user_data.get("email"), "totalPoints": user_points, "isCurrentUser": True}
+                my_rank_entry = {"rank": rank, "displayName": user.get("displayName", "Anonymous"),, "totalPoints": user_points, "isCurrentUser": True}
             
             response_data = json.loads(cached_leaderboard)
             response_data['myRank'] = my_rank_entry
