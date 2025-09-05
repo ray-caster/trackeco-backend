@@ -90,7 +90,6 @@ def process_avatar_image(gcs_path, user_id):
         dest_blob = bucket.blob(processed_blob_name)
         
         dest_blob.upload_from_file(output_buffer, content_type='image/webp')
-        dest_blob.make_public()
         
         user_ref = db.collection('users').document(user_id)
         user_ref.update({'avatarUrl': dest_blob.public_url})
