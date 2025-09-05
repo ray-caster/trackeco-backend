@@ -1,7 +1,8 @@
+#gamification.py
 import json
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
-
+import uuid
 from .config import db, redis_client
 from .auth import token_required
 from .pydantic_models import TeamUpRequest
