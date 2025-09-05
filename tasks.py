@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, messaging
 import pytz
-
+import redis
 from logging_config import setup_logging
 
 # --- SETUP & CONFIG ---
@@ -29,6 +29,18 @@ WIB_TZ = pytz.timezone('Asia/Jakarta')
 _db = None
 _storage_client = None
 _firebase_app = None
+_redis_client = None
+
+def get_redis_client():
+    """Lazily initializes and returns a Redis client instance."""
+    global _redis_client
+    if _redis_client is None:
+        try:
+            _redis_client = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
+            _redis_client.ping()
+        except redis.exceptions.ConnectionError:
+            _redis_client = None
+    return _redis_client
 
 def get_db():
     """Initializes and returns a Firestore client instance."""
@@ -254,7 +266,7 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
     initialize_firebase()
     db = get_db()
     storage_client = get_storage_client()
-    
+    redis_client = get_redis_client()
     upload_ref = db.collection('uploads').document(upload_id)
     bucket = storage_client.bucket(bucket_name)
     source_blob = bucket.blob(gcs_filename)
@@ -284,8 +296,14 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         if not source_blob.exists(): raise FileNotFoundError(f"Blob '{gcs_filename}' not found.")
         source_blob.download_to_filename(temp_local_path)
         analysis_result_str = None
-        for api_key in ACTIVE_GEMINI_KEYS:
+        if not redis_client:
+            raise ConnectionError("Cannot connect to Redis to get active API key index.")
+        start_index = int(redis_client.get("current_gemini_key_index") or 0)
+        for i in range(len(ACTIVE_GEMINI_KEYS)):
+            current_index = (start_index + i) % len(ACTIVE_GEMINI_KEYS)
+            api_key = ACTIVE_GEMINI_KEYS[current_index]
             try:
+                logging.info(f"--> Trying Gemini API Key #{current_index + 1}")
                 client_instance = genai.Client(api_key=api_key)
                 gemini_file_resource = client_instance.files.upload(file=temp_local_path)
                 while gemini_file_resource.state.name == "PROCESSING":
@@ -293,13 +311,19 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
                 if gemini_file_resource.state.name == "FAILED": raise Exception("Gemini File API failed.")
                 response = client_instance.models.generate_content(model="gemini-2.5-flash", contents=[gemini_file_resource, prompt])
                 analysis_result_str = response.text
+                redis_client.set("current_gemini_key_index", current_index)
+                logging.info(f"Gemini API Key #{current_index + 1} succeeded. Setting as active key.")
                 break
             except Exception as e:
-                logging.warning(f"Gemini key failed: {e}. Trying next...")
+                logging.warning(f"Gemini API Key #{current_index + 1} failed: {e}")
                 if gemini_file_resource:
                     try: client_instance.files.delete(name=gemini_file_resource.name)
                     except: pass
-                gemini_file_resource = None; continue
+                gemini_file_resource = None
+                if i == len(ACTIVE_GEMINI_KEYS) - 1:
+                    logging.error("All Gemini API keys have failed.")
+                    raise
+                continue
         if not analysis_result_str: raise Exception("All Gemini API keys failed.")
         cleaned_json_string = analysis_result_str.strip().removeprefix("```json").removesuffix("```").strip()
         ai_result = json.loads(cleaned_json_string)

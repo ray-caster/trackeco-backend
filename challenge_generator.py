@@ -9,7 +9,7 @@ from google import genai
 from google.oauth2 import service_account
 from dotenv import load_dotenv
 import pytz
-
+import redis
 # --- SETUP & CONFIG ---
 try:
     from logging_config import setup_logging
@@ -29,6 +29,12 @@ try:
         raise ValueError("No GEMINI_API_KEY environment variables found.")
 except Exception as e:
     logging.critical(f"FATAL: Script setup failed. Error: {e}", exc_info=True)
+    exit()
+    redis_client = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
+    redis_client.ping()
+except Exception as e:
+    logging.critical(f"FATAL: Challenge generator could not connect to Redis. Error: {e}")
+    redis_client = None
     exit()
 
 CHALLENGE_PROMPT = """
@@ -99,19 +105,40 @@ Generate the JSON response now. Your entire output must start with `{` and end w
 
 def generate_new_challenge_from_ai(timescale, challenge_type, previous_descriptions=[]):
     """Calls Gemini to generate a challenge based on specific criteria."""
+    if not ACTIVE_GEMINI_KEYS:
+        raise Exception("No active Gemini API keys found.")
+    start_index = int(redis_client.get("current_challenge_gemini_key_index") or 0)
     logging.info(f"Attempting to generate a new '{challenge_type}' challenge for timescale '{timescale}' from Gemini API...")
-    for api_key in ACTIVE_GEMINI_KEYS:
-        client_instance = genai.Client(api_key=api_key)
+    for i in range(len(ACTIVE_GEMINI_KEYS)):
+        current_index = (start_index + i) % len(ACTIVE_GEMINI_KEYS)
+        api_key = ACTIVE_GEMINI_KEYS[current_index]
+        try:
+            logging.info(f"--> Trying Gemini API Key #{i + 1}")
+            client_instance = genai.Client(api_key=api_key)
         
-        previous_list = "- " + "\n- ".join(previous_descriptions) if previous_descriptions else "N/A"
-        prompt = CHALLENGE_PROMPT.replace('{timescale_placeholder}', timescale)
-        prompt = prompt.replace('{challenge_type_placeholder}', challenge_type)
-        prompt = prompt.replace('{previous_challenges_placeholder}', previous_list)
+            previous_list = "- " + "\n- ".join(previous_descriptions) if previous_descriptions else "N/A"
+            prompt = CHALLENGE_PROMPT.replace('{timescale_placeholder}', timescale)
+            prompt = prompt.replace('{challenge_type_placeholder}', challenge_type)
+            prompt = prompt.replace('{previous_challenges_placeholder}', previous_list)
 
-        response = client_instance.models.generate_content(model="gemini-2.5-pro", contents=[prompt])
-        
-        cleaned_json_string = response.text.strip().removeprefix("```json").removesuffix("```").strip()
-        return json.loads(cleaned_json_string)
+            response = client_instance.models.generate_content(model="gemini-2.5-pro", contents=[prompt])
+            
+            logging.info(f"Successfully received response from Gemini API Key #{i + 1}.")
+            raw_text = response.text
+            logging.debug(f"Raw Gemini response: {raw_text}")
+            redis_client.set("current_challenge_gemini_key_index", current_index)
+            cleaned_json_string = raw_text.strip().removeprefix("```json").removesuffix("```").strip()
+            parsed_json = json.loads(cleaned_json_string)
+            logging.info(f"Successfully parsed JSON from Gemini response: {parsed_json}")
+            return parsed_json
+            
+        except Exception as e:
+            logging.warning(f"Gemini API Key #{current_index + 1} failed. Error: {e}")
+            if i == len(ACTIVE_GEMINI_KEYS) - 1:
+                logging.error("All Gemini API keys have failed.")
+                raise
+            continue
+    raise Exception("No active Gemini API keys were available to attempt the call.")
 
 @firestore.transactional
 def activate_new_challenges_transaction(transaction, challenge_type, new_challenges):
