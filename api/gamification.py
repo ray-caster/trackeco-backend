@@ -8,29 +8,83 @@ from .auth import token_required
 from .pydantic_models import TeamUpRequest
 gamification_bp = Blueprint('gamification_bp', __name__)
 
+def get_user_profiles_from_ids(user_ids):
+    if not user_ids: return []
+    refs = (db.collection('users').document(uid) for uid in user_ids)
+    docs = db.get_all(refs)
+    profiles = []
+    for doc in docs:
+        if doc.exists:
+            user = doc.to_dict()
+            profiles.append({
+                "userId": user.get('userId'),
+                "displayName": user.get('displayName'),
+                "username": user.get('username'),
+                "avatarUrl": user.get('avatarUrl')
+            })
+    return profiles
+
 @gamification_bp.route('/profile', methods=['GET'])
 @token_required
 def get_profile(user_id):
     user_ref = db.collection('users').document(user_id)
-    user = user_ref.get()
-    if not user.exists:
-        return jsonify({
-            "totalPoints": 0, "currentStreak": 0, "maxStreak": 0,
-            "completedChallengeIds": [], "challengeProgress": {},
-            "referralCode": "N/A", "onboardingComplete": False,
-            "activeTeamChallenges": [] # Also return for non-existent user
-        }), 200
+    user_doc = user_ref.get()
+
+    if not user_doc.exists:
+        return jsonify({"error": "User not found"}), 404
+
+    user_data = user_doc.to_dict()
+
+    # Fetch full profiles for friends and requests
+    friend_ids = user_data.get('friends', [])
+    sent_request_ids = user_data.get('friendRequestsSent', [])
+    received_request_ids = user_data.get('friendRequestsReceived', [])
+
+    friends = get_user_profiles_from_ids(friend_ids)
+    sent_requests = get_user_profiles_from_ids(sent_request_ids)
+    received_requests = get_user_profiles_from_ids(received_request_ids)
+
+    # Fetch full data for team invitations
+    invitation_ids = user_data.get('teamChallengeInvitations', [])
+    invitations = []
+    if invitation_ids:
+        team_refs = [db.collection('teamChallenges').document(tid) for tid in invitation_ids]
+        team_docs = db.get_all(team_refs)
+        host_ids_to_fetch = {doc.to_dict().get('hostId') for doc in team_docs if doc.exists}
+        
+        # Fetch display names for all hosts in one go
+        host_profiles = {p['userId']: p['displayName'] for p in get_user_profiles_from_ids(list(host_ids_to_fetch))}
+
+        for doc in team_docs:
+            if doc.exists:
+                team_data = doc.to_dict()
+                host_id = team_data.get('hostId')
+                invitations.append({
+                    "teamChallengeId": team_data.get('teamChallengeId'),
+                    "description": team_data.get('description'),
+                    "hostDisplayName": host_profiles.get(host_id, "Someone")
+                })
     
-    user_data = user.to_dict()
+    # Construct the full, rich profile response
     profile_data = {
+        "userId": user_data.get("userId"),
+        "displayName": user_data.get("displayName"),
+        "username": user_data.get("username"),
+        "avatarUrl": user_data.get("avatarUrl"),
         "totalPoints": user_data.get("totalPoints", 0),
         "currentStreak": user_data.get("currentStreak", 0),
         "maxStreak": user_data.get("maxStreak", 0),
+        "referralCode": user_data.get("referralCode", "N/A"),
         "completedChallengeIds": user_data.get("completedChallengeIds", []),
         "challengeProgress": user_data.get("challengeProgress", {}),
-        "referralCode": user_data.get("referralCode", "N/A"),
         "onboardingComplete": user_data.get("onboardingComplete", False),
-        "activeTeamChallenges": user_data.get("activeTeamChallenges", []) # Add this field
+        "onboardingStep": user_data.get("onboardingStep", 0),
+        "activeTeamChallenges": user_data.get("activeTeamChallenges", []),
+        "teamChallengeInvitations": invitations,
+        # For simplicity, we can remove friends from profile and keep the dedicated /friends endpoint
+        # "friends": friends, 
+        # "friendRequestsSent": sent_requests,
+        # "friendRequestsReceived": received_requests
     }
     return jsonify(profile_data), 200
 
