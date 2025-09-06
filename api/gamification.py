@@ -6,7 +6,7 @@ from google.cloud import firestore
 
 from .config import db, redis_client
 from .auth import token_required
-from .pydantic_models import TeamUpRequest, LeaderboardEntry
+from .pydantic_models import TeamUpRequest, UserSummary
 # Import the single, canonical helper for fetching user profiles
 from users import get_user_profiles_from_ids
 
@@ -53,7 +53,7 @@ def get_v2_leaderboard(user_id):
                 rank_above = query_greater.count().get()[0][0].value
                 my_rank = rank_above + 1
 
-                my_rank_entry = LeaderboardEntry(
+                my_rank_entry = UserSummary(
                     rank=my_rank,
                     displayName=user_data.get('displayName', 'You'),
                     userId=user_id,
