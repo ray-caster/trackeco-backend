@@ -77,3 +77,11 @@ class V2LeaderboardResponse(BaseModel):
     topEntries: List[LeaderboardEntry]
     nearbyEntries: List[LeaderboardEntry]
     myRank: Optional[LeaderboardEntry] = None
+
+class PublicProfileResponse(BaseModel):
+    userId: str
+    displayName: Optional[str] = "Anonymous"
+    username: Optional[str] = None
+    avatarUrl: Optional[str] = None
+    totalPoints: int = 0
+    currentStreak: int = 0

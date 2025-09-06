@@ -3,10 +3,37 @@ from flask import Blueprint, request, jsonify
 import datetime
 from .config import db,GCS_BUCKET_NAME,storage_client, tasks_client
 from .auth import token_required # We still need the decorator
-from .pydantic_models import FcmTokenUpdateRequest, AvatarUploadRequest, AvatarUploadCompleteRequest
+from .pydantic_models import FcmTokenUpdateRequest, AvatarUploadRequest, AvatarUploadCompleteRequest, PublicProfileResponse
 from tasks import process_avatar_image # Import the new Celery task
 import logging
 users_bp = Blueprint('users_bp', __name__)
+
+
+@users_bp.route('/<profile_user_id>', methods=['GET'])
+@token_required
+def get_public_profile(user_id, profile_user_id):
+    """
+    Fetches a limited, public version of another user's profile.
+    """
+    user_ref = db.collection('users').document(profile_user_id)
+    user_doc = user_ref.get()
+
+    if not user_doc.exists:
+        return jsonify({"error": "User not found"}), 404
+    
+    user_data = user_doc.to_dict()
+    
+    # Use the Pydantic model to select and validate the public fields
+    public_profile = PublicProfileResponse(
+        userId=user_data.get('userId'),
+        displayName=user_data.get('displayName'),
+        username=user_data.get('username'),
+        avatarUrl=user_data.get('avatarUrl'),
+        totalPoints=int(user_data.get('totalPoints', 0)),
+        currentStreak=user_data.get('currentStreak', 0)
+    )
+
+    return public_profile.model_dump(), 200
 
 @users_bp.route('/initiate-avatar-upload', methods=['POST'])
 @token_required

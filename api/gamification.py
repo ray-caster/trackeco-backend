@@ -46,79 +46,61 @@ def get_user_profiles_from_docs(docs):
 @token_required
 def get_v2_leaderboard(user_id):
     """
-    A scalable leaderboard endpoint that fetches the Top 3 and a 'window' of users
-    around the current player, utilizing a cache for the Top 3.
+    A scalable leaderboard endpoint that can fetch chunks of the leaderboard
+    from any starting point, in either direction.
     """
     try:
-        user_ref = db.collection('users').document(user_id)
-        user_doc = user_ref.get()
-        if not user_doc.exists:
-            return jsonify({"error": "Current user not found."}), 404
+        # Get pagination parameters from the request query string
+        start_after_rank = request.args.get('startAfterRank', type=int)
         
-        user_data = user_doc.to_dict()
-        user_points = user_data.get('totalPoints', 0)
+        page_size = 25 # Define how many users to fetch per page
 
-        # 1. Get the user's absolute rank using an efficient count query
-        query_greater = db.collection('users').where("totalPoints", ">", user_points)
-        count_agg_query = query_greater.count()
-        rank_above = count_agg_query.get()[0][0].value
-        my_rank = rank_above + 1
+        # --- Query Logic ---
+        query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING)
 
-        # 2. Fetch the Top 3 users, with caching
-        cache_key = "leaderboard_top_3"
-        top_entries = None
+        if start_after_rank:
+            # If paginating, start the query after the given rank
+            query = query.offset(start_after_rank)
         
-        if redis_client:
-            cached_top_3 = redis_client.get(cache_key)
-            if cached_top_3:
-                # If cache hit, load the data from Redis
-                top_entries_data = json.loads(cached_top_3)
-                top_entries = [LeaderboardEntry(**data) for data in top_entries_data]
-                logging.info("Leaderboard Top 3 cache HIT.")
+        query = query.limit(page_size)
+        docs = list(query.stream())
+        entries = get_user_profiles_from_docs(docs)
         
-        if top_entries is None:
-            # If cache miss, query Firestore
-            logging.info("Leaderboard Top 3 cache MISS. Querying Firestore.")
-            top_query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING).limit(3)
-            top_docs = list(top_query.stream())
-            top_entries = get_user_profiles_from_docs(top_docs)
-            for i, entry in enumerate(top_entries):
-                entry.rank = i + 1
-            # Save the result to the cache for next time (expires in 10 minutes)
-            if redis_client:
-                # We need to convert the Pydantic models back to dicts to store in JSON
-                top_entries_for_cache = [entry.model_dump() for entry in top_entries]
-                redis_client.set(cache_key, json.dumps(top_entries_for_cache), ex=600)
+        # Assign correct ranks to the fetched entries
+        current_rank = start_after_rank + 1 if start_after_rank else 1
+        for entry in entries:
+            entry.rank = current_rank
+            entry.isCurrentUser = entry.userId == user_id
+            current_rank += 1
         
-        # 3. Fetch the 'window' of users around the current player (this is always live)
-        window_size = 10
-        start_rank = max(1, my_rank - window_size)
+        # --- My Rank Calculation (if not already in the fetched page) ---
+        my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
         
-        nearby_query = db.collection('users').order_by(
-            'totalPoints', direction=firestore.Query.DESCENDING
-        ).offset(start_rank - 1).limit(window_size * 2 + 1)
-        
-        nearby_docs = list(nearby_query.stream())
-        nearby_entries = get_user_profiles_from_docs(nearby_docs)
-        
-        for i, entry in enumerate(nearby_entries):
-            entry.rank = start_rank + i
-        
-        # 4. Construct the final response
-        my_rank_entry = None
-        for entry in nearby_entries + top_entries:
-            if entry.userId == user_id:
-                entry.isCurrentUser = True
-                my_rank_entry = entry
-                my_rank_entry.rank = my_rank
-        
-        response = V2LeaderboardResponse(
-            topEntries=top_entries,
-            nearbyEntries=nearby_entries,
-            myRank=my_rank_entry
-        )
+        if my_rank_entry is None:
+            # If user is not in the current page, calculate their rank separately
+            user_doc = db.collection('users').document(user_id).get()
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                user_points = user_data.get('totalPoints', 0)
+                
+                query_greater = db.collection('users').where("totalPoints", ">", user_points)
+                rank_above = query_greater.count().get()[0][0].value
+                my_rank = rank_above + 1
 
-        return response.model_dump_json(), 200
+                my_rank_entry = LeaderboardEntry(
+                    rank=my_rank,
+                    displayName=user_data.get('displayName', 'You'),
+                    userId=user_id,
+                    totalPoints=int(user_points),
+                    avatarUrl=user_data.get('avatarUrl'),
+                    isCurrentUser=True
+                )
+
+        # For this new simplified model, we return one list and the user's rank
+        return jsonify({
+            "leaderboardPage": [entry.model_dump() for entry in entries],
+            "myRank": my_rank_entry.model_dump() if my_rank_entry else None
+        }), 200
 
     except Exception as e:
         logging.error(f"Error fetching v2 leaderboard: {e}", exc_info=True)
