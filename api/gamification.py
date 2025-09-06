@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 import uuid
 
-from .config import db
+from .config import db, redis_client
 from .auth import token_required
 from .pydantic_models import TeamUpRequest, V2LeaderboardResponse, LeaderboardEntry
 
@@ -47,7 +47,7 @@ def get_user_profiles_from_docs(docs):
 def get_v2_leaderboard(user_id):
     """
     A scalable leaderboard endpoint that fetches the Top 3 and a 'window' of users
-    around the current player.
+    around the current player, utilizing a cache for the Top 3.
     """
     try:
         user_ref = db.collection('users').document(user_id)
@@ -64,15 +64,33 @@ def get_v2_leaderboard(user_id):
         rank_above = count_agg_query.get()[0][0].value
         my_rank = rank_above + 1
 
-        # 2. Fetch the Top 3 users (always needed)
-        top_query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING).limit(3)
-        top_docs = list(top_query.stream())
-        top_entries = get_user_profiles_from_docs(top_docs)
-        for i, entry in enumerate(top_entries):
-            entry.rank = i + 1
-
-        # 3. Fetch the 'window' of users around the current player
-        # We fetch 10 users before and 10 users after
+        # 2. Fetch the Top 3 users, with caching
+        cache_key = "leaderboard_top_3"
+        top_entries = None
+        
+        if redis_client:
+            cached_top_3 = redis_client.get(cache_key)
+            if cached_top_3:
+                # If cache hit, load the data from Redis
+                top_entries_data = json.loads(cached_top_3)
+                top_entries = [LeaderboardEntry(**data) for data in top_entries_data]
+                logging.info("Leaderboard Top 3 cache HIT.")
+        
+        if top_entries is None:
+            # If cache miss, query Firestore
+            logging.info("Leaderboard Top 3 cache MISS. Querying Firestore.")
+            top_query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING).limit(3)
+            top_docs = list(top_query.stream())
+            top_entries = get_user_profiles_from_docs(top_docs)
+            for i, entry in enumerate(top_entries):
+                entry.rank = i + 1
+            # Save the result to the cache for next time (expires in 10 minutes)
+            if redis_client:
+                # We need to convert the Pydantic models back to dicts to store in JSON
+                top_entries_for_cache = [entry.model_dump() for entry in top_entries]
+                redis_client.set(cache_key, json.dumps(top_entries_for_cache), ex=600)
+        
+        # 3. Fetch the 'window' of users around the current player (this is always live)
         window_size = 10
         start_rank = max(1, my_rank - window_size)
         
@@ -83,18 +101,16 @@ def get_v2_leaderboard(user_id):
         nearby_docs = list(nearby_query.stream())
         nearby_entries = get_user_profiles_from_docs(nearby_docs)
         
-        # Assign correct ranks to the nearby entries
         for i, entry in enumerate(nearby_entries):
             entry.rank = start_rank + i
         
         # 4. Construct the final response
         my_rank_entry = None
-        # Find the current user in the fetched lists to mark them
         for entry in nearby_entries + top_entries:
             if entry.userId == user_id:
                 entry.isCurrentUser = True
                 my_rank_entry = entry
-                my_rank_entry.rank = my_rank # Ensure the absolute rank is set
+                my_rank_entry.rank = my_rank
         
         response = V2LeaderboardResponse(
             topEntries=top_entries,
@@ -107,7 +123,6 @@ def get_v2_leaderboard(user_id):
     except Exception as e:
         logging.error(f"Error fetching v2 leaderboard: {e}", exc_info=True)
         return jsonify({"error": "Could not load leaderboard data."}), 500
-    
     
 @gamification_bp.route('/profile', methods=['GET'])
 @token_required
