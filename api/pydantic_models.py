@@ -37,7 +37,7 @@ class InitiateUploadRequest(BaseModel):
     fcm_token: Optional[str] = None
 
 class UploadCompleteRequest(BaseModel):
-    gcs_upload_id: str # Corresponds to the ID from the initiateUpload response
+    upload_id: str # Corresponds to the ID from the initiateUpload response
 
 class AvatarUploadRequest(BaseModel):
     contentType: str
