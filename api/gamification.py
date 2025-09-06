@@ -16,55 +16,64 @@ gamification_bp = Blueprint('gamification_bp', __name__)
 @token_required
 def get_v2_leaderboard(user_id):
     """
-    A scalable, paginated leaderboard endpoint.
-    It can fetch pages from any starting rank.
+    A truly dynamic leaderboard endpoint.
+    - If no params are given, it returns a window around the current user.
+    - If 'startAfterRank' is given, it fetches the page AFTER that rank.
+    - If 'startBeforeRank' is given, it fetches the page BEFORE that rank.
     """
     try:
         start_after_rank = request.args.get('startAfterRank', type=int)
-        page_size = 25
-        
-        query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING)
-        
-        if start_after_rank:
-            query = query.offset(start_after_rank)
-        
-        query = query.limit(page_size)
-        docs = list(query.stream())
-        
-        # Use the central helper to get Pydantic models
-        doc_ids = [doc.id for doc in docs]
-        entries = get_user_profiles_from_ids(doc_ids, current_user_id=user_id)
-        
-        current_rank = start_after_rank + 1 if start_after_rank else 1
-        for entry in entries:
-            entry.rank = current_rank
-            current_rank += 1
-        
-        # --- My Rank Calculation (if not already in the fetched page) ---
-        my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
-        
-        if my_rank_entry is None:
-            user_doc = db.collection('users').document(user_id).get()
-            if user_doc.exists:
-                user_data = user_doc.to_dict()
-                user_points = int(user_data.get("totalPoints", 0))
-                
-                query_greater = db.collection('users').where("totalPoints", ">", user_points)
-                rank_above = query_greater.count().get()[0][0].value
-                my_rank = rank_above + 1
+        start_before_rank = request.args.get('startBeforeRank', type=int)
+        page_size = 20 # Fetch 20 users per page
 
-                my_rank_entry = UserSummary(
-                    rank=my_rank,
-                    displayName=user_data.get('displayName', 'You'),
-                    userId=user_id,
-                    totalPoints=user_points,
-                    avatarUrl=user_data.get('avatarUrl'),
-                    isCurrentUser=True
-                )
+        my_rank_entry = None
+        
+        # --- Query Logic ---
+        query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING)
+
+        if start_after_rank:
+            # PAGINATING DOWN: Fetch the next 20 users
+            query = query.offset(start_after_rank).limit(page_size)
+            docs = list(query.stream())
+            entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
+            # Assign ranks
+            for i, entry in enumerate(entries):
+                entry.rank = start_after_rank + 1 + i
+        
+        elif start_before_rank:
+            # PAGINATING UP: Fetch the 20 users before a certain rank
+            start_offset = max(0, start_before_rank - page_size)
+            query = query.offset(start_offset).limit(page_size)
+            docs = list(query.stream())
+            entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
+            # Assign ranks
+            for i, entry in enumerate(entries):
+                entry.rank = start_offset + 1 + i
+
+        else:
+            # INITIAL LOAD: Fetch a window around the current user
+            user_doc = db.collection('users').document(user_id).get()
+            user_data = user_doc.to_dict()
+            user_points = int(user_data.get("totalPoints", 0))
+            
+            query_greater = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", user_points))
+            rank_above = query_greater.count().get()[0][0].value
+            my_rank = rank_above + 1
+            
+            # Fetch 10 before, self, and 10 after
+            start_offset = max(0, my_rank - 11)
+            query = query.offset(start_offset).limit(21)
+            docs = list(query.stream())
+            entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
+            # Assign ranks
+            for i, entry in enumerate(entries):
+                entry.rank = start_offset + 1 + i
+            
+            my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
 
         return jsonify({
             "leaderboardPage": [entry.model_dump() for entry in entries],
-            "myRank": my_rank_entry.model_dump() if my_rank_entry else None
+            "myRank": my_rank_entry.model_dump() if my_rank_entry else None # Only sent on initial load
         }), 200
 
     except Exception as e:
