@@ -12,8 +12,8 @@ from firebase_admin import messaging
 import pytz
 import redis
 from logging_config import setup_logging
-from api.prompts import AI_ANALYSIS_PROMPT # Import the prompt from the central file
-from PIL import Image      # For image processing
+from api.prompts import AI_ANALYSIS_PROMPT
+from PIL import Image
 from io import BytesIO
 # --- SETUP & CONFIG ---
 setup_logging()
@@ -112,16 +112,19 @@ def award_bonus_points(user_id, amount, reason):
 
 @firestore.transactional
 def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_result_json_string, active_challenges, today_wib_date):
-    """Atomically updates user's individual stats and the upload document based on the AI result."""
+    """Atomically updates user stats based on the new AI result format."""
     ai_result = json.loads(ai_result_json_string)
     user_doc = user_ref.get(transaction=transaction)
     if not user_doc.exists:
-        logging.warning(f"User {user_ref.id} not found in transaction. Only updating upload status.")
         transaction.update(upload_ref, {'status': 'COMPLETED', 'aiResult': ai_result_json_string})
         return (None, False)
 
     user_data = user_doc.to_dict()
-    current_points, new_score = user_data.get('totalPoints', 0), round(ai_result.get('finalScore', 0.0))
+    current_points = user_data.get('totalPoints', 0)
+    
+    # FIX: Read the final score directly from the AI's calculation.
+    new_score = ai_result.get('finalScore', 0)
+    
     user_completed_ids = user_data.get('completedChallengeIds', [])
     newly_completed_ids, bonus_points = [], 0
     challenge_progress = user_data.get('challengeProgress', {})
