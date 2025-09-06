@@ -67,7 +67,6 @@ def signup():
 def verify_email():
     req_data = VerifyRequest.model_validate(request.get_json())
     
-    # FIX: These lines were missing. They fetch the data from Firestore.
     attempt_ref = db.collection('verification_attempts').document(req_data.email)
     attempt_doc = attempt_ref.get()
     if not attempt_doc.exists: return jsonify({"error_code": "NOT_FOUND"}), 404
@@ -76,15 +75,35 @@ def verify_email():
     if datetime.datetime.now(datetime.timezone.utc) > attempt_data['expiresAt']:
         attempt_ref.delete(); return jsonify({"error_code": "EXPIRED_CODE"}), 400
     
-    # This line will now work correctly because attempt_data is defined.
     if attempt_data['verificationCode'] != req_data.code: return jsonify({"error_code": "INVALID_CODE"}), 400
     
     user_id = str(uuid.uuid4())
     referral_code = generate_unique_referral_code()
+    
+    # FIX: The user_data dictionary now includes all required fields with default empty values.
     user_data = {
-        'userId': user_id, 'email': req_data.email, 'passwordHash': attempt_data['passwordHash'],
-        'isVerified': True, 'createdAt': firestore.SERVER_TIMESTAMP, 'onboardingStep': 0,
-        'onboardingComplete': False, 'referralCode': referral_code
+        'userId': user_id, 
+        'email': req_data.email, 
+        'passwordHash': attempt_data['passwordHash'],
+        'isVerified': True, 
+        'createdAt': firestore.SERVER_TIMESTAMP,
+        'onboardingStep': 0,
+        'onboardingComplete': False, 
+        'referralCode': referral_code,
+        # --- NEWLY ADDED FIELDS ---
+        'totalPoints': 0,
+        'currentStreak': 0,
+        'maxStreak': 0,
+        'avatarUrl': None,
+        'displayName': None,
+        'username': None,
+        'completedChallengeIds': [],
+        'challengeProgress': {},
+        'activeTeamChallenges': [],
+        'teamChallengeInvitations': [],
+        'friends': [],
+        'friendRequestsSent': [],
+        'friendRequestsReceived': []
     }
     
     create_user_and_mapping_transaction(db.transaction(), user_id, req_data.email, user_data, attempt_ref)
@@ -141,11 +160,33 @@ def auth_google():
     user_ref = db.collection('users').document(google_id)
     if not user_ref.get().exists:
         referral_code = generate_unique_referral_code()
-        user_ref.set({
-            'userId': google_id, 'email': user_email, 'isVerified': True,
-            'createdAt': firestore.SERVER_TIMESTAMP, 'displayName': display_name,
-            'onboardingStep': 0, 'onboardingComplete': False, 'referralCode': referral_code
-        })
+        
+        # FIX: The user_data dictionary for new Google users now includes all required fields.
+        new_user_data = {
+            'userId': google_id, 
+            'email': user_email, 
+            'isVerified': True,
+            'createdAt': firestore.SERVER_TIMESTAMP, 
+            'displayName': display_name,
+            'onboardingStep': 0, 
+            'onboardingComplete': False, 
+            'referralCode': referral_code,
+            # --- NEWLY ADDED FIELDS ---
+            'totalPoints': 0,
+            'currentStreak': 0,
+            'maxStreak': 0,
+            'avatarUrl': None,
+            'username': None, # Username is set during onboarding
+            'completedChallengeIds': [],
+            'challengeProgress': {},
+            'activeTeamChallenges': [],
+            'teamChallengeInvitations': [],
+            'friends': [],
+            'friendRequestsSent': [],
+            'friendRequestsReceived': []
+        }
+        
+        user_ref.set(new_user_data)
         db.collection('email_mappings').document(user_email).set({'userId': google_id})
         db.collection('referral_codes').document(referral_code).set({'userId': google_id})
         email_hash = hashlib.sha256(user_email.encode('utf-8')).hexdigest()

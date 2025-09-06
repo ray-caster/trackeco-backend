@@ -115,10 +115,11 @@ class ProfileResponse(BaseModel):
     referralCode: Optional[str] = None
     onboardingComplete: bool
     onboardingStep: int
-    completedChallengeIds: List[str]
-    challengeProgress: dict
-    activeTeamChallenges: List[str]
-    teamChallengeInvitations: List[TeamChallengeInvitation]
-    friends: List[UserSummary]
-    sentRequests: List[UserSummary]
-    receivedRequests: List[UserSummary]
+    completedChallengeIds: List[str] = []
+    challengeProgress: dict = {}
+    activeTeamChallenges: List[str] = []
+    teamChallengeInvitations: List[TeamChallengeInvitation] = []
+    friends: List[UserSummary] = []
+    sentRequests: List[UserSummary] = []
+    receivedRequests: List[UserSummary] = []
+    
