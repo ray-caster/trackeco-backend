@@ -8,7 +8,7 @@ from .config import db, redis_client
 from .auth import token_required
 from .pydantic_models import TeamUpRequest, UserSummary
 # Import the single, canonical helper for fetching user profiles
-from users import get_user_profiles_from_ids
+from .users import get_user_profiles_from_ids
 
 gamification_bp = Blueprint('gamification_bp', __name__)
 

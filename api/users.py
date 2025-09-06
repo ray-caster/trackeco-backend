@@ -11,8 +11,7 @@ from .pydantic_models import (
     AvatarUploadRequest, 
     UsernameCheckRequest, 
     UserSearchResponse,
-    TeamChallengeInvitation,
-    LeaderboardEntry
+    TeamChallengeInvitation
 )
 # We need to import the central helper to get friend data
 def get_user_profiles_from_ids(user_ids, current_user_id=None):

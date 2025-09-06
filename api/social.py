@@ -127,7 +127,7 @@ def find_by_emails(user_id):
             return jsonify([]), 200
 
         # Import the helper here to avoid circular dependency at the top level
-        from users import get_user_profiles_from_ids
+        from .users import get_user_profiles_from_ids
         matching_profiles = get_user_profiles_from_ids(list(matching_user_ids), user_id)
         
         return jsonify([p.model_dump() for p in matching_profiles]), 200
