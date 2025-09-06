@@ -132,17 +132,15 @@ def remove_friend(user_id):
     
     return jsonify({"message": "Friend removed."}), 200
     
-@social_bp.route('/find-by-emails', methods=['POST']) # Endpoint renamed for clarity
+@social_bp.route('/find-by-emails', methods=['POST'])
 @token_required
 def find_by_emails(user_id):
-    # The request model can be reused, it just contains a list of hashes
     req_data = ContactHashesRequest.model_validate(request.get_json())
     if not req_data.hashes: return jsonify([]), 200
     
     matching_user_ids = set()
     for i in range(0, len(req_data.hashes), 30):
         chunk = req_data.hashes[i:i+30]
-        # FIX: Query the correct 'email_hashes' collection
         query = db.collection('email_hashes').where(filter=firestore.FieldFilter.from_document_id("in", chunk))
         for doc in query.stream():
             uid = doc.to_dict().get('userId')
@@ -151,6 +149,10 @@ def find_by_emails(user_id):
 
     if not matching_user_ids:
         return jsonify([]), 200
+
+    # FIX: After finding the IDs, fetch and return their full public profiles.
+    matching_profiles = get_user_profiles_from_ids(list(matching_user_ids))
+    return jsonify(matching_profiles), 200
 
 # --- HEALTH CHECK ---
 def health_check():
