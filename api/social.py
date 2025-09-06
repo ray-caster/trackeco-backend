@@ -5,7 +5,7 @@ from google.cloud import firestore
 from .pydantic_models import FriendRequest, FriendResponseRequest, ContactHashesRequest
 from .config import db
 from .auth import token_required
-
+from .users import get_user_profiles_from_ids
 social_bp = Blueprint('social_bp', __name__)
 
 # --- Transactional Helper ---
@@ -144,3 +144,31 @@ def health_check():
         return {"status": "OK", "details": "Firestore collections and search index are accessible."}
     except Exception as e:
         return {"status": "ERROR", "details": f"Failed to query Firestore collections. Check indexes. Error: {str(e)}"}
+    
+@social_bp.route('/friends', methods=['GET'])
+@token_required
+def get_all_friend_data(user_id):
+    """
+    A single, efficient endpoint to get all friend-related data for the current user.
+    """
+    user_ref = db.collection('users').document(user_id)
+    user_doc = user_ref.get()
+
+    if not user_doc.exists:
+        return jsonify({"error": "User not found"}), 404
+
+    user_data = user_doc.to_dict()
+    
+    friend_ids = user_data.get('friends', [])
+    sent_request_ids = user_data.get('friendRequestsSent', [])
+    received_request_ids = user_data.get('friendRequestsReceived', [])
+
+    friends = [p.model_dump() for p in get_user_profiles_from_ids(friend_ids, user_id)]
+    sent_requests = [p.model_dump() for p in get_user_profiles_from_ids(sent_request_ids, user_id)]
+    received_requests = [p.model_dump() for p in get_user_profiles_from_ids(received_request_ids, user_id)]
+
+    return jsonify({
+        "friends": friends,
+        "sentRequests": sent_requests,
+        "receivedRequests": received_requests
+    }), 200

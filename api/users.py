@@ -102,13 +102,13 @@ def initiate_avatar_upload(user_id):
     
     return jsonify({"upload_url": signed_url, "gcs_path": blob_path}), 200
 
-# --- NEW UNIFIED PROFILE ENDPOINT ---
+
 @users_bp.route('/me', methods=['GET'])
 @token_required
 def get_my_profile(user_id):
     """
-    A single, unified endpoint to get all essential data for the logged-in user,
-    including their profile, stats, and all friend/request lists.
+    A lightweight endpoint that now ONLY returns the current user's direct data.
+    It does NOT include friend lists for maximum speed.
     """
     user_ref = db.collection('users').document(user_id)
     user_doc = user_ref.get()
@@ -118,17 +118,6 @@ def get_my_profile(user_id):
 
     user_data = user_doc.to_dict()
 
-    # --- Fetch Friend/Request Data using the central helper ---
-    friend_ids = user_data.get('friends', [])
-    sent_request_ids = user_data.get('friendRequestsSent', [])
-    received_request_ids = user_data.get('friendRequestsReceived', [])
-
-    # The helper returns Pydantic models, which we convert to dicts for the final JSON
-    friends = [p.model_dump() for p in get_user_profiles_from_ids(friend_ids, user_id)]
-    sent_requests = [p.model_dump() for p in get_user_profiles_from_ids(sent_request_ids, user_id)]
-    received_requests = [p.model_dump() for p in get_user_profiles_from_ids(received_request_ids, user_id)]
-    
-    # --- Fetch Team Invitation Data ---
     invitation_ids = user_data.get('teamChallengeInvitations', [])
     invitations = []
     if invitation_ids:
@@ -151,7 +140,8 @@ def get_my_profile(user_id):
                         hostDisplayName=host_profiles_map.get(host_id, "Someone")
                     ))
     
-    # --- Construct the final response using the Pydantic model for validation ---
+
+    # Use the Pydantic model, but the friend lists will be empty by default
     profile = ProfileResponse(
         userId=user_data.get("userId"),
         displayName=user_data.get("displayName"),
@@ -163,13 +153,7 @@ def get_my_profile(user_id):
         referralCode=user_data.get("referralCode"),
         onboardingComplete=user_data.get("onboardingComplete", False),
         onboardingStep=user_data.get("onboardingStep", 0),
-        completedChallengeIds=user_data.get("completedChallengeIds", []),
-        challengeProgress=user_data.get("challengeProgress", {}),
-        activeTeamChallenges=user_data.get("activeTeamChallenges", []),
         teamChallengeInvitations=invitations,
-        friends=friends,
-        sentRequests=sent_requests,
-        receivedRequests=received_requests
     )
     
     return profile.model_dump(), 200
