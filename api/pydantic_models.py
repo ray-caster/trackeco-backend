@@ -1,4 +1,5 @@
 from pydantic import BaseModel, EmailStr
+from typing import List, Optional, Union
 
 # --- AUTHENTICATION & ONBOARDING ---
 class AuthRequest(BaseModel):
@@ -62,3 +63,17 @@ class AvatarUploadRequest(BaseModel):
 
 class AvatarUploadCompleteRequest(BaseModel):
     gcsPath: str
+
+class LeaderboardEntry(BaseModel):
+    rank: Union[int, str]
+    displayName: Optional[str] = "Anonymous"
+    userId: str
+    totalPoints: int
+    avatarUrl: Optional[str] = None
+    isCurrentUser: bool = False
+
+# NEW: The response model for our advanced leaderboard endpoint
+class V2LeaderboardResponse(BaseModel):
+    topEntries: List[LeaderboardEntry]
+    nearbyEntries: List[LeaderboardEntry]
+    myRank: Optional[LeaderboardEntry] = None

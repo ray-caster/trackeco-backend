@@ -1,12 +1,14 @@
-#gamification.py
 import json
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 import uuid
-from .config import db, redis_client
+
+from .config import db
 from .auth import token_required
-from .pydantic_models import TeamUpRequest
+from .pydantic_models import TeamUpRequest, V2LeaderboardResponse, LeaderboardEntry
+
 gamification_bp = Blueprint('gamification_bp', __name__)
+import logging
 
 def get_user_profiles_from_ids(user_ids):
     if not user_ids: return []
@@ -24,6 +26,89 @@ def get_user_profiles_from_ids(user_ids):
             })
     return profiles
 
+def get_user_profiles_from_docs(docs):
+    """Helper to format user documents into LeaderboardEntry models."""
+    profiles = []
+    for doc in docs:
+        if doc.exists:
+            user = doc.to_dict()
+            profiles.append(LeaderboardEntry(
+                rank="-", # Rank will be assigned later
+                displayName=user.get('displayName', "Anonymous"),
+                userId=user.get('userId'),
+                totalPoints=int(user.get('totalPoints', 0)),
+                avatarUrl=user.get('avatarUrl'),
+                isCurrentUser=False # Flag will be set later
+            ))
+    return profiles
+
+@gamification_bp.route('/v2/leaderboard', methods=['GET'])
+@token_required
+def get_v2_leaderboard(user_id):
+    """
+    A scalable leaderboard endpoint that fetches the Top 3 and a 'window' of users
+    around the current player.
+    """
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+        if not user_doc.exists:
+            return jsonify({"error": "Current user not found."}), 404
+        
+        user_data = user_doc.to_dict()
+        user_points = user_data.get('totalPoints', 0)
+
+        # 1. Get the user's absolute rank using an efficient count query
+        query_greater = db.collection('users').where("totalPoints", ">", user_points)
+        count_agg_query = query_greater.count()
+        rank_above = count_agg_query.get()[0][0].value
+        my_rank = rank_above + 1
+
+        # 2. Fetch the Top 3 users (always needed)
+        top_query = db.collection('users').order_by('totalPoints', direction=firestore.Query.DESCENDING).limit(3)
+        top_docs = list(top_query.stream())
+        top_entries = get_user_profiles_from_docs(top_docs)
+        for i, entry in enumerate(top_entries):
+            entry.rank = i + 1
+
+        # 3. Fetch the 'window' of users around the current player
+        # We fetch 10 users before and 10 users after
+        window_size = 10
+        start_rank = max(1, my_rank - window_size)
+        
+        nearby_query = db.collection('users').order_by(
+            'totalPoints', direction=firestore.Query.DESCENDING
+        ).offset(start_rank - 1).limit(window_size * 2 + 1)
+        
+        nearby_docs = list(nearby_query.stream())
+        nearby_entries = get_user_profiles_from_docs(nearby_docs)
+        
+        # Assign correct ranks to the nearby entries
+        for i, entry in enumerate(nearby_entries):
+            entry.rank = start_rank + i
+        
+        # 4. Construct the final response
+        my_rank_entry = None
+        # Find the current user in the fetched lists to mark them
+        for entry in nearby_entries + top_entries:
+            if entry.userId == user_id:
+                entry.isCurrentUser = True
+                my_rank_entry = entry
+                my_rank_entry.rank = my_rank # Ensure the absolute rank is set
+        
+        response = V2LeaderboardResponse(
+            topEntries=top_entries,
+            nearbyEntries=nearby_entries,
+            myRank=my_rank_entry
+        )
+
+        return response.model_dump_json(), 200
+
+    except Exception as e:
+        logging.error(f"Error fetching v2 leaderboard: {e}", exc_info=True)
+        return jsonify({"error": "Could not load leaderboard data."}), 500
+    
+    
 @gamification_bp.route('/profile', methods=['GET'])
 @token_required
 def get_profile(user_id):

@@ -42,8 +42,8 @@ def get_user_profiles_from_ids(user_ids):
             profiles.append({
                 "userId": user.get('userId'),
                 "displayName": user.get('displayName'),
-                "username": user.get('username')
-                # Add avatarUrl here in the future
+                "username": user.get('username'),
+                "avatarUrl": user.get('avatarUrl')
             })
     return profiles
 
