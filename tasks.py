@@ -311,7 +311,7 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
                 
                 logging.info("File processed. Generating content...")
                 # FIX #1: Use a valid, powerful model for multimodal input
-                response = client_instance.models.generate_content(model="gemini-2.5-flash", contents=[prompt, gemini_file_resource])
+                response = client_instance.models.generate_content(model="gemini-2.5-pro", contents=[prompt, gemini_file_resource])
                 analysis_result_str = response.text
                 
                 redis_client.set("current_analysis_gemini_key_index", current_index)
