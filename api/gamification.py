@@ -81,7 +81,7 @@ def get_v2_leaderboard(user_id):
             user_doc = db.collection('users').document(user_id).get()
             if user_doc.exists:
                 user_data = user_doc.to_dict()
-                user_points = user_data.get('totalPoints', 0)
+                user_points = int(user_data.get("totalPoints", 0))
                 
                 query_greater = db.collection('users').where("totalPoints", ">", user_points)
                 rank_above = query_greater.count().get()[0][0].value
@@ -153,7 +153,7 @@ def get_profile(user_id):
         "displayName": user_data.get("displayName"),
         "username": user_data.get("username"),
         "avatarUrl": user_data.get("avatarUrl"),
-        "totalPoints": user_data.get("totalPoints", 0),
+        "totalPoints": int(user_data.get("totalPoints", 0)),
         "currentStreak": user_data.get("currentStreak", 0),
         "maxStreak": user_data.get("maxStreak", 0),
         "referralCode": user_data.get("referralCode", "N/A"),
