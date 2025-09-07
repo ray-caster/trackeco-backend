@@ -22,6 +22,7 @@ ANDROID_CLIENT_ID = os.environ.get("ANDROID_CLIENT_ID") # This is your WEB Clien
 ALGOLIA_APP_ID = os.environ.get("ALGOLIA_APP_ID")
 ALGOLIA_ADMIN_API_KEY = os.environ.get("ALGOLIA_ADMIN_API_KEY")
 ALGOLIA_INDEX_NAME = os.environ.get("ALGOLIA_INDEX_NAME")
+ALGOLIA_SEARCH_API_KEY=os.environ.get("ALGOLIA_SEARCH_API_KEYY")
 
 # --- Redis Cache Setup ---
 try:

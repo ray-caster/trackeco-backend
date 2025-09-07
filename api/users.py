@@ -5,18 +5,20 @@ import json
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 import datetime
-from .config import db, storage_client, GCS_BUCKET_NAME, redis_client, algolia_client, ALGOLIA_INDEX_NAME
+from .config import db, storage_client, GCS_BUCKET_NAME, redis_client, algolia_client, ALGOLIA_INDEX_NAME, ALGOLIA_SEARCH_API_KEY, ALGOLIA_APP_ID
 from .auth import token_required
 from .pydantic_models import (
     PublicProfileResponse, 
     ProfileResponse, 
     AvatarUploadRequest, 
     UsernameCheckRequest, 
-    UserSearchResponse,
     TeamChallengeInvitation,
-    UserSummary
+    UserSummary,
+    AlgoliaSearchKeyResponse
 )
 from .cache_utils import get_user_summary_cache_key, invalidate_user_summary_cache # <-- IMPORT cache helpers
+
+
 
 def get_user_profiles_from_ids(user_ids, current_user_id=None):
     """
@@ -84,6 +86,26 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
 
 users_bp = Blueprint('users_bp', __name__)
 
+
+@users_bp.route('/algolia-search-key', methods=['GET'])
+@token_required
+def get_algolia_search_key(user_id):
+    """Provides the client with a secure, search-only API key."""
+    # Load these from environment variables for security
+    app_id = ALGOLIA_APP_ID
+    search_only_key = ALGOLIA_SEARCH_API_KEY # IMPORTANT: Generate this in your dashboard
+    index_name = ALGOLIA_INDEX_NAME
+
+    if not all([app_id, search_only_key, index_name]):
+        logging.error("Algolia search-only credentials are not configured on the server.")
+        return jsonify({"error": "Search is not configured."}), 503
+
+    response = AlgoliaSearchKeyResponse(
+        appId=app_id,
+        searchOnlyApiKey=search_only_key,
+        indexName=index_name
+    )
+    return response.model_dump(), 200
 @users_bp.route('/search', methods=['GET'])
 @token_required
 def search_users(user_id):

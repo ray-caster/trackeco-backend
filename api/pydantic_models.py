@@ -77,7 +77,11 @@ class TeamChallengeInvitation(BaseModel):
     teamChallengeId: str
     description: str
     hostDisplayName: str
-
+    
+class AlgoliaSearchKeyResponse(BaseModel):
+    appId: str
+    searchOnlyApiKey: str
+    indexName: str
 # --- CANONICAL USER & RESPONSE MODELS ---
 
 # This is now the single, canonical model for any user summary
