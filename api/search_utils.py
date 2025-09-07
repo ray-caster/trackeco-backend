@@ -1,14 +1,14 @@
 # FILE: trackeco-backend/api/search_utils.py
 
 import logging
-from .config import db, algolia_index
+from .config import db, algolia_client, ALGOLIA_INDEX_NAME # <-- Import client and index name
 
 def sync_user_to_algolia(user_id):
     """
-    Fetches the latest user data from Firestore and syncs it to Algolia.
-    This is the single source of truth for indexing logic.
+    Fetches the latest user data from Firestore and syncs it to Algolia
+    using the modern v3+ SDK.
     """
-    if not algolia_index:
+    if not algolia_client:
         logging.warning("Algolia client not configured. Skipping sync.")
         return
 
@@ -17,15 +17,15 @@ def sync_user_to_algolia(user_id):
         user_doc = user_ref.get()
 
         if not user_doc.exists:
-            # If the user doesn't exist, try to delete them from the index
-            algolia_index.delete_object(user_id)
-            logging.info(f"Deleted user {user_id} from Algolia index as they no longer exist in Firestore.")
+            # If the user doesn't exist, delete them from the index
+            algolia_client.delete_object(
+                index_name=ALGOLIA_INDEX_NAME, object_id=user_id
+            ).wait()
+            logging.info(f"Deleted user {user_id} from Algolia as they no longer exist in Firestore.")
             return
 
         user_data = user_doc.to_dict()
 
-        # Construct the record for Algolia.
-        # The 'objectID' is crucial and must be the same as your Firestore document ID.
         record = {
             'objectID': user_id,
             'userId': user_data.get('userId'),
@@ -35,10 +35,11 @@ def sync_user_to_algolia(user_id):
             'totalPoints': user_data.get('totalPoints', 0)
         }
         
-        # Save the object to the index. This will create or update the record.
-        algolia_index.save_object(record).wait()
+        # Call save_object directly on the client
+        algolia_client.save_object(
+            index_name=ALGOLIA_INDEX_NAME, object=record
+        ).wait()
         logging.info(f"Successfully synced user {user_id} to Algolia.")
 
     except Exception as e:
-        # Log the error but don't crash the main application flow
         logging.error(f"Failed to sync user {user_id} to Algolia: {e}", exc_info=True)
