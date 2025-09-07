@@ -37,8 +37,7 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
             if cached_json:
                 model_data = json.loads(cached_json)
                 model_data.setdefault('rank', 0)
-                # --- THE FIX ---
-                # Add docId from the user_id
+                model_data.setdefault('currentStreak', 0)
                 model_data['docId'] = user_id
                 profiles_from_cache[user_id] = UserSummary.model_validate(model_data)
             else:
@@ -65,6 +64,7 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
                     displayName=user.get('displayName'),
                     username=user.get('username'),
                     avatarUrl=user.get('avatarUrl'),
+                    currentStreak=int(user.get('currentStreak', 0)),
                     totalPoints=int(user.get('totalPoints', 0)),
                 )
                 profiles_from_db.append(entry)

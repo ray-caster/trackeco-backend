@@ -86,6 +86,7 @@ class UserSummary(BaseModel):
     displayName: Optional[str] = "Anonymous"
     userId: str
     totalPoints: int = 0
+    currentStreak: int = 0
     avatarUrl: Optional[str] = None
     isCurrentUser: bool = False
     docId: Optional[str] = None
