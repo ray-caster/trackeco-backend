@@ -12,6 +12,31 @@ from .users import get_user_profiles_from_ids
 from extensions import limiter
 
 gamification_bp = Blueprint('gamification_bp', __name__)
+def _apply_privacy_filter(profiles: list[UserSummary]):
+    """
+    Applies privacy settings to a list of user profiles.
+    This function fetches the original user documents to check their settings.
+    """
+    if not profiles:
+        return []
+
+    user_ids = [p.userId for p in profiles]
+    user_docs = db.collection('users').where('userId', 'in', user_ids).stream()
+    privacy_settings = {doc.id: doc.to_dict() for doc in user_docs}
+
+    anonymized_profiles = []
+    for profile in profiles:
+        user_settings = privacy_settings.get(profile.userId, {})
+        
+        if user_settings.get('showDisplayNameInLeaderboard', True) is False:
+            profile.displayName = "Anonymous"
+        
+        if user_settings.get('showAvatarInLeaderboard', True) is False:
+            profile.avatarUrl = None
+            
+        anonymized_profiles.append(profile)
+    
+    return anonymized_profiles
 
 @gamification_bp.route('/v2/leaderboard', methods=['GET'])
 @token_required
@@ -118,12 +143,15 @@ def get_v2_leaderboard(user_id):
         # Add docId to myRank object for consistency
         if my_rank_entry:
             my_rank_entry.docId = my_rank_entry.userId
-        
-        final_page = [entry.model_dump() for entry in entries]
 
+        
+        final_entries = _apply_privacy_filter(entries)
+        final_my_rank_entry = _apply_privacy_filter([my_rank_entry])[0] if my_rank_entry else None
+        final_page = [entry.model_dump() for entry in final_entries]
+        
         return jsonify({
             "leaderboardPage": final_page,
-            "myRank": my_rank_entry.model_dump() if my_rank_entry else None,
+            "myRank": final_my_rank_entry.model_dump() if final_my_rank_entry else None,
             "totalUsers": total_users
         }), 200
 

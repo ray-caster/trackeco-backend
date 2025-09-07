@@ -4,15 +4,17 @@ import logging
 from firebase_admin import messaging
 from .config import db
 
-def send_notification(user_id, title, body, data=None):
+def send_notification(user_id, title, body, data=None, setting_name=None):
     """
-    Sends a push notification to a specific user.
+    Sends a push notification to a specific user, respecting their settings.
 
     Args:
         user_id (str): The ID of the user to send the notification to.
         title (str): The title of the notification.
         body (str): The body/message of the notification.
-        data (dict, optional): A dictionary of custom data to send with the message.
+        data (dict, optional): Custom data to send.
+        setting_name (str, optional): The name of the boolean field in the user's document
+                                      that controls this notification type (e.g., 'socialRemindersEnabled').
     """
     try:
         user_ref = db.collection('users').document(user_id)
@@ -23,8 +25,16 @@ def send_notification(user_id, title, body, data=None):
             return
 
         user_data = user_doc.to_dict()
-        fcm_token = user_data.get('fcmToken')
 
+        # --- SETTINGS CHECK ---
+        if setting_name:
+            # If the setting field exists and is False, stop. Default to True if field is missing.
+            if user_data.get(setting_name, True) is False:
+                logging.info(f"Skipping '{title}' notification for user {user_id} as they have disabled '{setting_name}'.")
+                return
+        # --- END SETTINGS CHECK ---
+        
+        fcm_token = user_data.get('fcmToken')
         if not fcm_token:
             logging.info(f"User {user_id} does not have an FCM token. Skipping notification.")
             return

@@ -64,7 +64,8 @@ def send_streak_reminders():
                 user_id=user_id,
                 title="Don't lose your streak! 🔥",
                 body=f"You're on a {user_data.get('currentStreak')}-day streak. Record an eco-action to keep it going!",
-                data={"type": "streak_reminder"}
+                data={"type": "streak_reminder"},
+                setting_name="streakRemindersEnabled"
             )
             reminders_sent_count += 1
             

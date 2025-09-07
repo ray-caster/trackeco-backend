@@ -129,4 +129,15 @@ class ProfileResponse(BaseModel):
     friends: List[UserSummary] = []
     sentRequests: List[UserSummary] = []
     receivedRequests: List[UserSummary] = []
-    
+    streakRemindersEnabled: bool = True
+    socialRemindersEnabled: bool = True
+    analysisRemindersEnabled: bool = True
+    showDisplayNameInLeaderboard: bool = True
+    showAvatarInLeaderboard: bool = True
+
+class UpdateSettingsRequest(BaseModel):
+    streakRemindersEnabled: Optional[bool] = None
+    socialRemindersEnabled: Optional[bool] = None
+    analysisRemindersEnabled: Optional[bool] = None
+    showDisplayNameInLeaderboard: Optional[bool] = None
+    showAvatarInLeaderboard: Optional[bool] = None

@@ -14,7 +14,8 @@ from .pydantic_models import (
     UsernameCheckRequest, 
     TeamChallengeInvitation,
     UserSummary,
-    AlgoliaSearchKeyResponse
+    AlgoliaSearchKeyResponse,
+    UpdateSettingsRequest
 )
 from .cache_utils import get_user_summary_cache_key, invalidate_user_summary_cache # <-- IMPORT cache helpers
 
@@ -86,7 +87,49 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
 
 users_bp = Blueprint('users_bp', __name__)
 
+@users_bp.route('/update-settings', methods=['POST'])
+@token_required
+def update_settings(user_id):
+    """
+    Updates various user settings based on the provided request.
+    """
+    try:
+        req_data = UpdateSettingsRequest.model_validate(request.get_json())
+    except Exception as e:
+        return jsonify({"error": "Invalid request body", "details": str(e)}), 400
 
+    update_data = {}
+    # Dynamically build the dictionary of fields to update
+    if req_data.streakRemindersEnabled is not None:
+        update_data['streakRemindersEnabled'] = req_data.streakRemindersEnabled
+    if req_data.socialRemindersEnabled is not None:
+        update_data['socialRemindersEnabled'] = req_data.socialRemindersEnabled
+    if req_data.analysisRemindersEnabled is not None:
+        update_data['analysisRemindersEnabled'] = req_data.analysisRemindersEnabled
+    if req_data.showDisplayNameInLeaderboard is not None:
+        update_data['showDisplayNameInLeaderboard'] = req_data.showDisplayNameInLeaderboard
+    if req_data.showAvatarInLeaderboard is not None:
+        update_data['showAvatarInLeaderboard'] = req_data.showAvatarInLeaderboard
+
+    if not update_data:
+        return jsonify({"message": "No settings to update"}), 200
+
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_ref.update(update_data)
+        
+        # CRITICAL: Invalidate the cache after updating settings that might affect the user summary
+        if 'showDisplayNameInLeaderboard' in update_data or 'showAvatarInLeaderboard' in update_data:
+            invalidate_user_summary_cache(user_id)
+            # You might also need to trigger an update to your Algolia index here
+            # from tasks import update_algolia_record
+            # update_algolia_record.delay(user_id)
+
+        return jsonify({"message": "Settings updated successfully"}), 200
+    except Exception as e:
+        logging.error(f"Failed to update settings for user {user_id}. Error: {e}")
+        return jsonify({"error": "Could not update settings"}), 500
+    
 @users_bp.route('/search-key', methods=['GET'])
 @token_required
 def get_algolia_search_key(user_id):
@@ -204,6 +247,11 @@ def get_my_profile(user_id):
         challengeProgress=user_data.get('challengeProgress', {}),
         activeTeamChallenges=user_data.get('activeTeamChallenges', []),
         teamChallengeInvitations=invitations,
+        streakRemindersEnabled=user_data.get("streakRemindersEnabled", True),
+        socialRemindersEnabled=user_data.get("socialRemindersEnabled", True),
+        analysisRemindersEnabled=user_data.get("analysisRemindersEnabled", True),
+        showDisplayNameInLeaderboard=user_data.get("showDisplayNameInLeaderboard", True),
+        showAvatarInLeaderboard=user_data.get("showAvatarInLeaderboard", True)
     )
     
     return profile.model_dump(), 200

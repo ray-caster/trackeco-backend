@@ -61,7 +61,8 @@ def send_friend_request(user_id):
                 user_id=target_user_id,
                 title="New Friend Request!",
                 body=f"{sender_name} sent you a friend request.",
-                data={"type": "friend_request_received"}
+                data={"type": "friend_request_received"},
+                setting_name="socialRemindersEnabled"
             )
         return jsonify({"message": "Friend request sent."}), 200
     except Exception as e:
@@ -92,7 +93,8 @@ def accept_friend_request(user_id):
                 user_id=requester_user_id,
                 title="Friend Request Accepted!",
                 body=f"{acceptor_name} accepted your friend request.",
-                data={"type": "friend_request_accepted"}
+                data={"type": "friend_request_accepted"},
+                setting_name="socialRemindersEnabled"
             ) 
         return jsonify({"message": "Friend request accepted."}), 200
     except Exception as e:
