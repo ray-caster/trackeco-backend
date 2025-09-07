@@ -1,7 +1,7 @@
 import os
 from google.cloud import firestore, storage, tasks_v2
 import redis
-from algoliasearch.search_client import SearchClient
+from algoliasearch.search.client import SearchClient
 # --- Initialize Google Cloud Clients ---
 # These clients are initialized once here and then imported by other modules.
 # They will automatically use the GOOGLE_APPLICATION_CREDENTIALS environment variable.
@@ -44,7 +44,7 @@ if ALGOLIA_APP_ID and ALGOLIA_ADMIN_API_KEY:
 else:
     algolia_client = None
     algolia_index = None
-    
+
 # --- Gemini API Keys ---
 # Load up to 4 keys for redundancy. The scripts will use the first valid one.
 GEMINI_API_KEYS = [ os.environ.get(f"GEMINI_API_KEY_{i+1}") for i in range(4) ]

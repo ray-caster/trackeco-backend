@@ -2,7 +2,7 @@
 import os
 import logging
 from google.cloud import firestore
-from algoliasearch.search_client import SearchClient
+from algoliasearch.search.client import SearchClient
 from dotenv import load_dotenv
 
 # --- SETUP ---
