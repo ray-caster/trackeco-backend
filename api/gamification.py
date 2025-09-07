@@ -30,13 +30,14 @@ def get_v2_leaderboard(user_id):
 
         # --- PAGINATION LOGIC ---
         # --- Scrolling Down ---
+        total_users = base_query.count().get()[0][0].value
         if start_after_doc_id:
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
             query = base_query.start_after(last_doc_snapshot).limit(page_size)
-            total_users = base_query.count().get()[0][0].value
+            
             docs = list(query.stream())
             
             cursor_points = last_doc_snapshot.to_dict().get("totalPoints", 0)
