@@ -94,6 +94,7 @@ class UserSummary(BaseModel):
 class V2LeaderboardResponse(BaseModel):
     leaderboardPage: List[UserSummary]
     myRank: Optional[UserSummary] = None
+    totalUsers: int = 0
 
 # The response for the /users/{userId}/profile endpoint
 class PublicProfileResponse(BaseModel):

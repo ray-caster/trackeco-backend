@@ -6,7 +6,7 @@ from google.cloud import firestore
 
 from .config import db, redis_client
 from .auth import token_required
-from .pydantic_models import TeamUpRequest, UserSummary
+from .pydantic_models import TeamUpRequest, UserSummary, V2LeaderboardResponse
 # Import the single, canonical helper for fetching user profiles
 from .users import get_user_profiles_from_ids
 from extensions import limiter
@@ -78,6 +78,7 @@ def get_v2_leaderboard_mock(user_id):
         return jsonify({
             "leaderboardPage": final_page_dump,
             "myRank": my_rank_dump
+            "totalUsers": 100
         }), 200
 
     except Exception as e:
@@ -89,7 +90,9 @@ def get_v2_leaderboard_mock(user_id):
 def get_v2_leaderboard(user_id):
     """
     A fully bi-directional, stable, and cursor-based leaderboard endpoint.
-    - Correctly handles all rank calculations to prevent off-by-one errors.
+    - Includes totalUsers count for frontend percentile calculations.
+    - Fixes all deprecated queries.
+    - Fixes the off-by-one ranking error.
     """
     try:
         start_after_doc_id = request.args.get('startAfterDocId')
@@ -103,6 +106,11 @@ def get_v2_leaderboard(user_id):
         ).order_by(
             'userId', direction=firestore.Query.ASCENDING
         )
+        
+        # --- NEW FEATURE: Get the total count of users on the leaderboard ---
+        # We count users with more than 0 points to get an accurate total.
+        total_users_query = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", 0))
+        total_users = total_users_query.count().get()[0][0].value
 
         # --- PAGINATION LOGIC ---
         # --- Scrolling Down ---
@@ -115,14 +123,19 @@ def get_v2_leaderboard(user_id):
             docs = list(query.stream())
             
             cursor_points = last_doc_snapshot.to_dict().get("totalPoints", 0)
-            rank_above_cursor = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", cursor_points)).count().get()[0][0].value
-            rank_at_cursor_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<=", last_doc_snapshot.id)).count().get()[0][0].value
+
+            # --- DEPRECATION FIX ---
+            # Create new queries from the base collection reference
+            rank_above_cursor_q = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", cursor_points))
+            rank_at_cursor_level_q = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<=", last_doc_snapshot.id))
+            rank_above_cursor = rank_above_cursor_q.count().get()[0][0].value
+            rank_at_cursor_level = rank_at_cursor_level_q.count().get()[0][0].value
             
-            # This is the rank of the cursor (the last item of the previous page)
             start_rank = rank_above_cursor + rank_at_cursor_level
             
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
+                # --- RANKING FIX ---
                 entry.rank = start_rank + i
 
         # --- Scrolling Up ---
@@ -140,65 +153,68 @@ def get_v2_leaderboard(user_id):
                 first_new_doc_dict = first_new_doc.to_dict()
                 first_new_doc_points = first_new_doc_dict.get("totalPoints", 0)
 
-                rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", first_new_doc_points)).count().get()[0][0].value
-                rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", first_new_doc_points)).where(filter=firestore.FieldFilter("userId", "<=", first_new_doc.id)).count().get()[0][0].value
-                # This is the rank of the first item in our new list
+                # --- DEPRECATION FIX ---
+                rank_above_q = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", first_new_doc_points))
+                rank_at_level_q = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", "==", first_new_doc_points)).where(filter=firestore.FieldFilter("userId", "<=", first_new_doc.id))
+                rank_above = rank_above_q.count().get()[0][0].value
+                rank_at_level = rank_at_level_q.count().get()[0][0].value
+
                 first_item_rank = rank_above + rank_at_level
-                # We need the rank of the item BEFORE our list starts
                 start_rank = first_item_rank - 1
             else:
                 start_rank = 0
 
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
+                # --- RANKING FIX ---
                 entry.rank = start_rank + i
         
         # --- INITIAL LOAD ---
         else:
             user_doc = db.collection('users').document(user_id).get()
-            if not user_doc.exists:
-                return jsonify({"error": "Current user not found."}), 404
+            if not user_doc.exists: return jsonify({"error": "Current user not found."}), 404
             
             user_data = user_doc.to_dict()
             user_points = int(user_data.get("totalPoints", 0))
-            
-            rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", user_points)).count().get()[0][0].value
-            rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
+
+            # --- DEPRECATION FIX ---
+            rank_above_q = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", ">", user_points))
+            rank_at_my_level_q = db.collection('users').where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id))
+            rank_above = rank_above_q.count().get()[0][0].value
+            rank_at_my_level = rank_at_my_level_q.count().get()[0][0].value
             my_rank = rank_above + rank_at_my_level
 
             query_before = base_query.end_before(user_doc).limit_to_last(10)
-            docs_before_reversed = list(query_before.get())
+            docs_before_reversed = list(query.get())
             docs_before = list(reversed(docs_before_reversed))
             
             query_after = base_query.start_at(user_doc).limit(11)
-            docs_after = list(query_after.stream())
+            docs_after = list(query.after.stream())
 
             all_docs = docs_before + docs_after
-
-            # --- THE FIX IS HERE ---
-            # 1. Calculate the rank of the item BEFORE our window starts.
-            # This makes the logic consistent with pagination.
+            
             start_rank = my_rank - len(docs_before) - 1
             
             entries = get_user_profiles_from_ids([doc.id for doc in all_docs], user_id)
             entries.sort(key=lambda e: (-e.totalPoints, e.userId))
             
-            # 2. Use the consistent rank assignment formula.
             for i, entry in enumerate(entries):
+                # --- RANKING FIX ---
                 entry.rank = start_rank + i
             
             my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
 
-        # Add docId to myRank object for consistency
         if my_rank_entry:
             my_rank_entry.docId = my_rank_entry.userId
         
-        final_page = [entry.model_dump() for entry in entries]
+        # Use the Pydantic response model for validation and serialization
+        response_model = V2LeaderboardResponse(
+            leaderboardPage=entries,
+            myRank=my_rank_entry,
+            totalUsers=total_users
+        )
 
-        return jsonify({
-            "leaderboardPage": final_page,
-            "myRank": my_rank_entry.model_dump() if my_rank_entry else None
-        }), 200
+        return response_model.model_dump(), 200
 
     except Exception as e:
         logging.error(f"Error fetching v2 leaderboard: {e}", exc_info=True)
