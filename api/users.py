@@ -100,10 +100,8 @@ def search_users(user_id):
                 {
                     "indexName": ALGOLIA_INDEX_NAME,
                     "query": query_str,
-                    "params": {
-                        "hitsPerPage": 10,
-                        "filters": f'NOT userId:{user_id}'
-                    }
+                    "hitsPerPage": 10,
+                    "filters": f'NOT userId:{user_id}',
                 }
             ]
         })

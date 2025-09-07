@@ -47,9 +47,7 @@ try:
             {
                 "indexName": ALGOLIA_INDEX_NAME,
                 "query": search_query,
-                "params": {
-                    "hitsPerPage": 5
-                }
+                "hitsPerPage": 5,
             }
         ]
     })
