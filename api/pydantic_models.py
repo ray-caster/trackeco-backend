@@ -102,6 +102,7 @@ class PublicProfileResponse(BaseModel):
     avatarUrl: Optional[str] = None
     totalPoints: int = 0
     currentStreak: int = 0
+    docId: Optional[str] = None
 
 # The main, unified response for the /users/me endpoint
 class ProfileResponse(BaseModel):

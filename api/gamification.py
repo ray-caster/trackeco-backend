@@ -17,12 +17,15 @@ gamification_bp = Blueprint('gamification_bp', __name__)
 @limiter.exempt
 def get_v2_leaderboard(user_id):
     """
-    A truly dynamic and stable leaderboard endpoint using cursor-based pagination.
-    - Fixes the tie-breaking bug by adding a secondary sort on userId.
-    - Uses .get() for limit_to_last() queries and correctly reverses the result.
+    A fully bi-directional, stable, and cursor-based leaderboard endpoint.
+    - Handles startAfterDocId for scrolling down.
+    - Handles startBeforeDocId for scrolling up.
+    - Uses a stable sort to prevent tie-breaking issues.
     """
     try:
+        # --- THE FIX: Read both potential cursor parameters ---
         start_after_doc_id = request.args.get('startAfterDocId')
+        start_before_doc_id = request.args.get('startBeforeDocId')
         page_size = 20
         my_rank_entry = None
 
@@ -33,9 +36,9 @@ def get_v2_leaderboard(user_id):
             'userId', direction=firestore.Query.ASCENDING
         )
 
-        # --- If this is a pagination request (scrolling down) ---
+        # --- PAGINATION LOGIC ---
+        # --- Scrolling Down ---
         if start_after_doc_id:
-            # (This part for pagination remains unchanged and correct)
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
@@ -44,17 +47,42 @@ def get_v2_leaderboard(user_id):
             docs = list(query.stream())
             
             cursor_points = last_doc_snapshot.to_dict().get("totalPoints", 0)
-            
             rank_above_cursor = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", cursor_points)).count().get()[0][0].value
             rank_at_cursor_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<=", last_doc_snapshot.id)).count().get()[0][0].value
-            
             start_rank = rank_above_cursor + rank_at_cursor_level
             
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
                 entry.rank = start_rank + i + 1
+
+        # --- THE FIX: Scrolling Up ---
+        elif start_before_doc_id:
+            first_doc_snapshot = db.collection('users').document(start_before_doc_id).get()
+            if not first_doc_snapshot.exists:
+                return jsonify({"error": "Paging document not found."}), 404
+            
+            # Use end_before() with limit_to_last() to get the previous page
+            query = base_query.end_before(first_doc_snapshot).limit_to_last(page_size)
+            docs_reversed = list(query.get())
+            docs = list(reversed(docs_reversed))
+
+            # To get the rank, we need to calculate the rank of the first item in our new list
+            if docs:
+                first_new_doc = docs[0]
+                first_new_doc_dict = first_new_doc.to_dict()
+                first_new_doc_points = first_new_doc_dict.get("totalPoints", 0)
+
+                rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", first_new_doc_points)).count().get()[0][0].value
+                rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", first_new_doc_points)).where(filter=firestore.FieldFilter("userId", "<=", first_new_doc.id)).count().get()[0][0].value
+                start_rank = rank_above + rank_at_level
+            else:
+                start_rank = 1
+
+            entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
+            for i, entry in enumerate(entries):
+                entry.rank = start_rank + i
         
-        # --- If this is the INITIAL LOAD ---
+        # --- INITIAL LOAD ---
         else:
             user_doc = db.collection('users').document(user_id).get()
             if not user_doc.exists:
@@ -63,17 +91,12 @@ def get_v2_leaderboard(user_id):
             user_data = user_doc.to_dict()
             user_points = int(user_data.get("totalPoints", 0))
             
-            # A. Calculate My Rank (stable)
             rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", user_points)).count().get()[0][0].value
             rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
             my_rank = rank_above + rank_at_my_level
 
-            # B. Fetch the window of users
             query_before = base_query.end_before(user_doc).limit_to_last(10)
             docs_before_reversed = list(query_before.get())
-            
-            # --- THE FIX IS HERE ---
-            # The list from limit_to_last() is in reverse order, so we must reverse it back.
             docs_before = list(reversed(docs_before_reversed))
             
             query_after = base_query.start_at(user_doc).limit(11)
@@ -84,7 +107,6 @@ def get_v2_leaderboard(user_id):
 
             entries = get_user_profiles_from_ids([doc.id for doc in all_docs], user_id)
             
-            # Re-sort the combined list in memory to be absolutely certain of the order.
             entries.sort(key=lambda e: (-e.totalPoints, e.userId))
             
             for i, entry in enumerate(entries):
@@ -92,11 +114,7 @@ def get_v2_leaderboard(user_id):
             
             my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
 
-        final_page = []
-        for entry in entries:
-            entry_dict = entry.model_dump()
-            entry_dict['docId'] = entry.userId
-            final_page.append(entry_dict)
+        final_page = [entry.model_dump() for entry in entries]
 
         return jsonify({
             "leaderboardPage": final_page,

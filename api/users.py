@@ -22,7 +22,7 @@ from .cache_utils import get_user_summary_cache_key, invalidate_user_summary_cac
 def get_user_profiles_from_ids(user_ids, current_user_id=None):
     """
     The single, canonical helper function to fetch a list of user profiles.
-    IMPLEMENTATION: Now includes a Redis caching layer to reduce Firestore reads.
+    IMPLEMENTATION: Includes Redis caching and now populates the docId field.
     """
     if not user_ids:
         return []
@@ -30,61 +30,58 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
     profiles_from_cache = {}
     ids_to_fetch_from_db = []
 
-    # 1. Check Redis cache first
     if redis_client:
         keys = [get_user_summary_cache_key(uid) for uid in user_ids]
         cached_results = redis_client.mget(keys)
         for user_id, cached_json in zip(user_ids, cached_results):
             if cached_json:
                 model_data = json.loads(cached_json)
-
                 model_data.setdefault('rank', 0)
-                profiles_from_cache[user_id] = UserSummary.model_validate_json(cached_json)
+                # --- THE FIX ---
+                # Add docId from the user_id
+                model_data['docId'] = user_id
+                profiles_from_cache[user_id] = UserSummary.model_validate(model_data)
             else:
                 ids_to_fetch_from_db.append(user_id)
     else:
-        # If Redis is down, fetch all from Firestore
         ids_to_fetch_from_db = user_ids
 
-    # 2. Fetch any cache misses from Firestore
     profiles_from_db = []
     if ids_to_fetch_from_db:
         refs = (db.collection('users').document(str(uid)) for uid in ids_to_fetch_from_db)
         docs = db.get_all(refs)
         
-        # Use a pipeline for efficient caching
         pipe = redis_client.pipeline() if redis_client else None
         
         for doc in docs:
             if doc.exists:
                 user = doc.to_dict()
                 entry = UserSummary(
-                    rank=-1,
+                    rank=0,
                     userId=user.get('userId'),
+                    # --- THE FIX ---
+                    # The docId is the same as the userId.
+                    docId=user.get('userId'),
                     displayName=user.get('displayName'),
                     username=user.get('username'),
                     avatarUrl=user.get('avatarUrl'),
                     totalPoints=int(user.get('totalPoints', 0)),
                 )
                 profiles_from_db.append(entry)
-                # 3. Store newly fetched profiles back into the cache
                 if pipe:
                     key = get_user_summary_cache_key(user.get('userId'))
-                    pipe.set(key, entry.model_dump_json(), ex=300) # Cache for 5 minutes
+                    cache_data = entry.model_dump(exclude={'rank', 'isCurrentUser', 'docId'})
+                    pipe.set(key, json.dumps(cache_data), ex=300)
         
         if pipe:
             pipe.execute()
 
-    # 4. Combine results and set the isCurrentUser flag
-    all_profiles = list(profiles_from_cache.values()) + profiles_from_db
+    all_profiles_map = {p.userId: p for p in list(profiles_from_cache.values()) + profiles_from_db}
     
-    # Create a map for efficient lookup and update the isCurrentUser flag
-    final_profiles_map = {p.userId: p for p in all_profiles}
-    if current_user_id and current_user_id in final_profiles_map:
-        final_profiles_map[current_user_id].isCurrentUser = True
+    if current_user_id and current_user_id in all_profiles_map:
+        all_profiles_map[current_user_id].isCurrentUser = True
 
-    # Return the profiles in the original requested order
-    return [final_profiles_map[uid] for uid in user_ids if uid in final_profiles_map]
+    return [all_profiles_map[uid] for uid in user_ids if uid in all_profiles_map]
 
 users_bp = Blueprint('users_bp', __name__)
 
