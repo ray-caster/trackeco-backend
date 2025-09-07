@@ -33,7 +33,7 @@ from api.users import users_bp
 
 app.register_blueprint(auth_bp, url_prefix='/', strict_slashes=False    )
 app.register_blueprint(onboarding_bp, url_prefix='/onboarding', strict_slashes=False)
-app.register_blueprint(social_bp, url_prefix='/friends', strict_slashes=False)
+app.register_blueprint(social_bp, url_prefix='/social', strict_slashes=False)
 app.register_blueprint(gamification_bp, url_prefix='/', strict_slashes=False)
 app.register_blueprint(core_bp, url_prefix='/', strict_slashes=False)
 app.register_blueprint(admin_bp, url_prefix='/', strict_slashes=False)
