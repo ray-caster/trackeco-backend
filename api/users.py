@@ -87,7 +87,7 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
 users_bp = Blueprint('users_bp', __name__)
 
 
-@users_bp.route('/algolia-search-key', methods=['GET'])
+@users_bp.route('/search-key', methods=['GET'])
 @token_required
 def get_algolia_search_key(user_id):
     """Provides the client with a secure, search-only API key."""
