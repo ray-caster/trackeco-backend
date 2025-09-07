@@ -332,9 +332,10 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         
         if not analysis_result_str: raise Exception("All Gemini API keys failed.")
         cleaned_json_string = analysis_result_str.strip().removeprefix("```json").removesuffix("```").strip()
+        ai_result = json.loads(cleaned_json_string)
         is_low_confidence = ai_result.get('baseScore', 0) <= 2 and ai_result.get('effortScore', 0) <= 2
         
-        ai_result = json.loads(cleaned_json_string)
+        
         
 
         if ai_result.get("error"):
