@@ -5,6 +5,7 @@ from google.cloud import firestore
 from .pydantic_models import OnboardingProfile, OnboardingSurvey, OnboardingReferral
 from .config import db
 from .auth import token_required # Import the decorator from our auth blueprint
+from tasks import sync_user_to_algolia_task
 
 onboarding_bp = Blueprint('onboarding_bp', __name__)
 
@@ -25,6 +26,7 @@ def onboarding_profile(user_id):
     user_ref, username_ref = db.collection('users').document(user_id), db.collection('usernames').document(username)
     try:
         set_username_transaction(db.transaction(), username_ref, user_ref, username, req_data.displayName)
+        sync_user_to_algolia_task.delay(user_id)
         return jsonify({"message": "Profile step complete"}), 200
     except ValueError as e: return jsonify({"error_code": "USERNAME_TAKEN", "message": str(e)}), 409
     except Exception as e: return jsonify({"error_code": "SERVER_ERROR", "message": str(e)}), 500

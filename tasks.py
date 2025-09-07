@@ -18,6 +18,7 @@ from api.prompts import AI_ANALYSIS_PROMPT
 from PIL import Image
 from io import BytesIO
 from api.cache_utils import invalidate_user_summary_cache # <-- IMPORT cache helper
+from api.search_utils import sync_user_to_algolia
 
 # --- SETUP & CONFIG ---
 setup_logging()
@@ -63,6 +64,11 @@ def send_fcm_data_notification(doc_snapshot):
     except Exception as e:
         logging.error(f"Failed to send FCM for {doc_snapshot.id}: {e}", exc_info=True)
 
+@celery_app.task(name="sync_user_to_algolia_task", max_retries=3, default_retry_delay=60)
+def sync_user_to_algolia_task(user_id):
+    """Celery task to handle syncing a user to Algolia with retries."""
+    sync_user_to_algolia(user_id)
+
 @celery_app.task(name="process_avatar_image")
 def process_avatar_image(gcs_path, user_id):
     logging.info(f"Processing avatar for user {user_id} from path: {gcs_path}")
@@ -96,6 +102,7 @@ def process_avatar_image(gcs_path, user_id):
         
         user_ref = db.collection('users').document(user_id)
         user_ref.update({'avatarUrl': dest_blob.public_url})
+        sync_user_to_algolia_task.delay(user_id)
         invalidate_user_summary_cache(user_id) # <-- Invalidate cache on success
         
         logging.info(f"Successfully updated avatar for user: {user_id}")
@@ -109,6 +116,7 @@ def award_bonus_points(user_id, amount, reason):
     try:
         db = get_db()
         user_ref = db.collection('users').document(user_id)
+        sync_user_to_algolia_task.delay(user_id)
         user_ref.update({'totalPoints': firestore.Increment(amount)})
         invalidate_user_summary_cache(user_id) # <-- Invalidate cache on success
         logging.info(f"Awarded {amount} bonus points to {user_id} for: {reason}")
@@ -338,7 +346,7 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
             today_wib_date = datetime.datetime.now(WIB_TZ).date()
             transaction = db.transaction()
             referrer_id, is_first_upload = update_stats_and_upload_transaction(transaction, user_ref, upload_ref, cleaned_json_string, active_challenges_full, today_wib_date)
-            
+            sync_user_to_algolia(user_id)
             if referrer_id and is_first_upload:
                 award_bonus_points.delay(referrer_id, 50, "Successful Referral")
             

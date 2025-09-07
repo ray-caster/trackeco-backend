@@ -13,11 +13,11 @@ from google.auth.transport import requests as google_auth_requests
 import jwt
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from email_utils import send_verification_email
+from .email_utils import send_verification_email
 from .pydantic_models import AuthRequest, VerifyRequest, GoogleAuthRequest, ResendCodeRequest
 from .config import db, JWT_SECRET_KEY, ANDROID_CLIENT_ID
 from extensions import limiter # <-- IMPORT the limiter instance
-
+from tasks import sync_user_to_algolia_task
 auth_bp = Blueprint('auth_bp', __name__)
 
 # --- Helpers ---
@@ -109,6 +109,7 @@ def verify_email():
     }
     
     create_user_and_mapping_transaction(db.transaction(), user_id, req_data.email, user_data, attempt_ref)
+    sync_user_to_algolia_task.delay(user_id)
     email_hash = hashlib.sha256(req_data.email.encode('utf-8')).hexdigest()
     db.collection('email_hashes').document(email_hash).set({'userId': user_id})
     db.collection('referral_codes').document(referral_code).set({'userId': user_id})
@@ -190,6 +191,7 @@ def auth_google():
         }
         
         user_ref.set(new_user_data)
+        sync_user_to_algolia_task.delay(google_id)
         db.collection('email_mappings').document(user_email).set({'userId': google_id})
         db.collection('referral_codes').document(referral_code).set({'userId': google_id})
         email_hash = hashlib.sha256(user_email.encode('utf-8')).hexdigest()

@@ -1,12 +1,11 @@
 # FILE: trackeco-backend/api/users.py
 
 import logging
-import json # <-- IMPORT json
+import json
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 import datetime
-
-from .config import db, storage_client, GCS_BUCKET_NAME, redis_client # <-- IMPORT redis_client
+from .config import db, storage_client, GCS_BUCKET_NAME, redis_client, algolia_index
 from .auth import token_required
 from .pydantic_models import (
     PublicProfileResponse, 
@@ -88,26 +87,26 @@ users_bp = Blueprint('users_bp', __name__)
 @users_bp.route('/search', methods=['GET'])
 @token_required
 def search_users(user_id):
+    if not algolia_index:
+        return jsonify({"error": "Search service is not configured."}), 503
+
     query_str = request.args.get('q', '').lower()
-    if not query_str or len(query_str) < 3:
+    if not query_str:
         return jsonify([]), 200
 
-    users_ref = db.collection('users')
-    username_query = users_ref.order_by('username').start_at(query_str).end_at(query_str + '\uf8ff').limit(5)
-    display_name_query = users_ref.order_by('displayName_lowercase').start_at(query_str).end_at(query_str + '\uf8ff').limit(5)
-    
-    results = {}
-    for doc in username_query.stream():
-        user_data = doc.to_dict()
-        if doc.id not in results and doc.id != user_id:
-            results[doc.id] = UserSearchResponse(**user_data)
-            
-    for doc in display_name_query.stream():
-        user_data = doc.to_dict()
-        if doc.id not in results and doc.id != user_id:
-            results[doc.id] = UserSearchResponse(**user_data)
-
-    return jsonify([user.model_dump() for user in results.values()]), 200
+    try:
+        # Perform the search on the Algolia index
+        results = algolia_index.search(query_str, {
+            'hitsPerPage': 10,
+            'filters': f'NOT userId:{user_id}' # Exclude the searcher from results
+        })
+        
+        # The search results are in the 'hits' key
+        return jsonify(results.get('hits', [])), 200
+        
+    except Exception as e:
+        logging.error(f"Algolia search failed for query '{query_str}': {e}", exc_info=True)
+        return jsonify({"error": "Search service is currently unavailable."}), 503
 
 @users_bp.route('/check-username', methods=['POST'])
 @token_required
