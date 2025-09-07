@@ -95,19 +95,26 @@ def search_users(user_id):
         return jsonify([]), 200
 
     try:
-        results = algolia_client.search({
+        results_object = algolia_client.search({
             "requests": [
                 {
                     "indexName": ALGOLIA_INDEX_NAME,
                     "query": query_str,
-                    "hitsPerPage": 10,
-                    "filters": f'NOT userId:{user_id}',
+                    "hitsPerPage": "10",
+                    "filters": f'NOT userId:{user_id}'
+                    
                 }
             ]
         })
 
-        # The actual search results are nested inside the response
-        hits = results.get('results', [{}])[0].get('hits', [])
+        # --- THIS IS THE FINAL FIX ---
+        # Convert the response object to a dictionary before accessing its data.
+        results_dict = json.loads(results_object.to_json())
+        
+        # Safely extract the hits using .get()
+        hits = results_dict.get('results', [{}])[0].get('hits', [])
+        # -----------------------------
+
         return jsonify(hits), 200
         
     except Exception as e:
