@@ -80,7 +80,7 @@ def get_v2_leaderboard(user_id):
 
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
-                entry.rank = start_rank + i + 1
+                entry.rank = start_rank + i
         
         # --- INITIAL LOAD ---
         else:
@@ -114,7 +114,7 @@ def get_v2_leaderboard(user_id):
             
             # 2. Use the consistent rank assignment formula.
             for i, entry in enumerate(entries):
-                entry.rank = start_rank + i + 1
+                entry.rank = start_rank + i
             
             my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
 
