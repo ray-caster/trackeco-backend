@@ -6,6 +6,7 @@ from .pydantic_models import FriendRequest, FriendResponseRequest, ContactHashes
 from .config import db
 from .auth import token_required
 from .users import get_user_profiles_from_ids
+from .notifications import send_notification
 social_bp = Blueprint('social_bp', __name__)
 
 # --- Transactional Helper ---
@@ -32,6 +33,13 @@ def process_friend_request_transaction(transaction, current_user_ref, requester_
 @token_required
 def send_friend_request(user_id):
     """Adds a user ID to the target's received requests and the sender's sent requests."""
+    sender_id = user_id
+    
+    req_data = request.get_json()
+    target_user_id = req_data.get('targetUserId')
+
+    if not target_user_id:
+        return jsonify({"error": "targetUserId is required"}), 400
     try:
         req_data = FriendRequest.model_validate(request.get_json())
         if user_id == req_data.targetUserId:
@@ -44,7 +52,17 @@ def send_friend_request(user_id):
         batch.update(current_user_ref, {'friendRequestsSent': firestore.ArrayUnion([req_data.targetUserId])})
         batch.update(target_user_ref, {'friendRequestsReceived': firestore.ArrayUnion([user_id])})
         batch.commit()
-        
+        sender_profile = get_user_profiles_from_ids([sender_id])
+        if sender_profile:
+            sender_name = sender_profile[0].displayName or "Someone"
+            
+            # Send notification to the person RECEIVING the request
+            send_notification(
+                user_id=target_user_id,
+                title="New Friend Request!",
+                body=f"{sender_name} sent you a friend request.",
+                data={"type": "friend_request_received"}
+            )
         return jsonify({"message": "Friend request sent."}), 200
     except Exception as e:
         logging.error(f"Error sending friend request from {user_id}: {e}", exc_info=True)
@@ -53,6 +71,10 @@ def send_friend_request(user_id):
 @social_bp.route('/accept', methods=['POST'])
 @token_required
 def accept_friend_request(user_id):
+    acceptor_id = user_id
+    req_data = request.get_json()
+    # This is the user who ORIGINALLY SENT the request
+    requester_user_id = req_data.get('requesterUserId')
     """Accepts a friend request, adding users to each other's friend lists."""
     try:
         req_data = FriendResponseRequest.model_validate(request.get_json())
@@ -61,6 +83,17 @@ def accept_friend_request(user_id):
         
         # Use the atomic transaction to ensure data consistency
         process_friend_request_transaction(db.transaction(), current_user_ref, requester_ref)
+        acceptor_profile = get_user_profiles_from_ids([acceptor_id])
+        if acceptor_profile:
+            acceptor_name = acceptor_profile[0].displayName or "Someone"
+
+            # Send notification to the person who ORIGINALLY SENT the request
+            send_notification(
+                user_id=requester_user_id,
+                title="Friend Request Accepted!",
+                body=f"{acceptor_name} accepted your friend request.",
+                data={"type": "friend_request_accepted"}
+            ) 
         return jsonify({"message": "Friend request accepted."}), 200
     except Exception as e:
         logging.error(f"Error accepting friend request for {user_id}: {e}", exc_info=True)

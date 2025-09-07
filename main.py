@@ -63,19 +63,3 @@ def internal_server_error(e):
     """Handles unexpected 500 Internal Server Errors for a clean API response."""
     logging.critical(f"An unhandled exception occurred: {e}", exc_info=True)
     return jsonify(error_code="INTERNAL_SERVER_ERROR", message="An unexpected error occurred on the server."), 500
-
-# --- SERVER STARTUP LOGIC ---
-# This is also safe now.
-with app.app_context():
-    logging.info("Server starting up. Checking for active challenges...")
-    from api.config import db
-    from challenge_generator import generate_challenge_set
-    
-    query = db.collection('challenges').where(filter=firestore.FieldFilter('isActive', '==', True)).limit(1)
-    if not list(query.stream()):
-        logging.warning("No active challenges found on startup. Generating defaults.")
-        generate_challenge_set('daily', simple_count=2, progress_count=1)
-        generate_challenge_set('weekly', simple_count=1, progress_count=1)
-        generate_challenge_set('monthly', simple_count=1, progress_count=1)
-    else:
-        logging.info("Active challenges found. Startup check complete.")
