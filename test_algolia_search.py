@@ -37,34 +37,38 @@ try:
     logging.info("Client initialized successfully.")
 
     # --- 3. PERFORM THE SEARCH ---
-    # We will search for "genie", which should find "eugenie"
     search_query = "genie"
     logging.info(f"Performing search for query: '{search_query}'...")
     
-    # This is the actual API call. We wrap it in a try/except block.
-    results = client.browse_object(
-        index_name=ALGOLIA_INDEX_NAME,
-        query=search_query,
-        request_options={
-            'hitsPerPage': 5
+    # --- THIS IS THE FIX ---
+    # The search method takes a single dictionary containing a list of requests.
+    results = client.search([
+        {
+            "indexName": ALGOLIA_INDEX_NAME,
+            "query": search_query,
+            "params": {  # request_options are passed as 'params' here
+                "hitsPerPage": 5
+            }
         }
-    )
+    ])
+    # -----------------------
     
     # --- 4. PRINT THE RESULTS ---
     logging.info("Search request completed successfully!")
     print("\n--- SEARCH RESULTS ---")
-    hits = results.get('hits', [])
+    # For multi-search, results are in a list under the 'results' key
+    hits = results.get('results', [{}])[0].get('hits', [])
     if hits:
         print(f"Found {len(hits)} result(s):")
         for hit in hits:
             print(f"  - objectID: {hit.get('objectID')}, displayName: {hit.get('displayName')}, points: {hit.get('totalPoints')}")
     else:
-        print("Query returned 0 results. This could be normal if no users match.")
+        print("Query returned 0 results.")
     print("----------------------\n")
     logging.info("✅ Test script finished successfully!")
 
 except Exception as e:
-    # --- 5. CATCH AND PRINT ANY ERRORS ---
+    # (The error catching part remains the same)
     logging.error("❌ An error occurred during the test!")
     logging.error(f"Error Type: {type(e).__name__}")
     logging.error(f"Error Details: {e}", exc_info=True)
