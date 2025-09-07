@@ -5,7 +5,7 @@ import json
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 import datetime
-from .config import db, storage_client, GCS_BUCKET_NAME, redis_client, algolia_index
+from .config import db, storage_client, GCS_BUCKET_NAME, redis_client, algolia_client
 from .auth import token_required
 from .pydantic_models import (
     PublicProfileResponse, 
@@ -87,7 +87,7 @@ users_bp = Blueprint('users_bp', __name__)
 @users_bp.route('/search', methods=['GET'])
 @token_required
 def search_users(user_id):
-    if not algolia_index:
+    if not algolia_client:
         return jsonify({"error": "Search service is not configured."}), 503
 
     query_str = request.args.get('q', '').lower()
@@ -95,19 +95,27 @@ def search_users(user_id):
         return jsonify([]), 200
 
     try:
-        # Perform the search on the Algolia index
-        results = algolia_index.search(query_str, {
-            'hitsPerPage': 10,
-            'filters': f'NOT userId:{user_id}' # Exclude the searcher from results
-        })
-        
-        # The search results are in the 'hits' key
-        return jsonify(results.get('hits', [])), 200
+        # --- THIS IS THE FIX ---
+        # Use the correct multi-request format for the search call.
+        results = algolia_client.search([
+            {
+                "indexName": ALGOLIA_INDEX_NAME,
+                "query": query_str,
+                "params": {
+                    "hitsPerPage": 10,
+                    "filters": f'NOT userId:{user_id}' # Filter out the current user
+                }
+            }
+        ])
+        # -----------------------
+
+        # The actual search results are nested inside the response
+        hits = results.get('results', [{}])[0].get('hits', [])
+        return jsonify(hits), 200
         
     except Exception as e:
         logging.error(f"Algolia search failed for query '{query_str}': {e}", exc_info=True)
         return jsonify({"error": "Search service is currently unavailable."}), 503
-
 @users_bp.route('/check-username', methods=['POST'])
 @token_required
 def check_username(user_id):
