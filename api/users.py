@@ -95,19 +95,18 @@ def search_users(user_id):
         return jsonify([]), 200
 
     try:
-        # --- THIS IS THE FIX ---
-        # Use the correct multi-request format for the search call.
-        results = algolia_client.search(
-            {
-                "indexName": ALGOLIA_INDEX_NAME,
-                "query": query_str,
-                "params": {
-                    "hitsPerPage": 10,
-                    "filters": f'NOT userId:{user_id}' # Filter out the current user
+        results = algolia_client.search({
+            "requests": [
+                {
+                    "indexName": ALGOLIA_INDEX_NAME,
+                    "query": query_str,
+                    "params": {
+                        "hitsPerPage": 10,
+                        "filters": f'NOT userId:{user_id}'
+                    }
                 }
-            }
-        )
-        # -----------------------
+            ]
+        })
 
         # The actual search results are nested inside the response
         hits = results.get('results', [{}])[0].get('hits', [])
