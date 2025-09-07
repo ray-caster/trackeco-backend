@@ -106,42 +106,7 @@ def get_algolia_search_key(user_id):
         indexName=index_name
     )
     return response.model_dump(), 200
-@users_bp.route('/search', methods=['GET'])
-@token_required
-def search_users(user_id):
-    if not algolia_client:
-        return jsonify({"error": "Search service is not configured."}), 503
-
-    query_str = request.args.get('q', '').lower()
-    if not query_str:
-        return jsonify([]), 200
-
-    try:
-        results_object = algolia_client.search({
-            "requests": [
-                {
-                    "indexName": ALGOLIA_INDEX_NAME,
-                    "query": query_str,
-                    "hitsPerPage": "10",
-                    "filters": f'NOT userId:{user_id}'
-                    
-                }
-            ]
-        })
-
-        # --- THIS IS THE FINAL FIX ---
-        # Convert the response object to a dictionary before accessing its data.
-        results_dict = json.loads(results_object.to_json())
-        
-        # Safely extract the hits using .get()
-        hits = results_dict.get('results', [{}])[0].get('hits', [])
-        # -----------------------------
-
-        return jsonify(hits), 200
-        
-    except Exception as e:
-        logging.error(f"Algolia search failed for query '{query_str}': {e}", exc_info=True)
-        return jsonify({"error": "Search service is currently unavailable."}), 503
+    
 @users_bp.route('/check-username', methods=['POST'])
 @token_required
 def check_username(user_id):

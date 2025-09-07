@@ -161,7 +161,9 @@ CHALLENGE_GENERATION_PROMPT="""<RoleAndGoal>
    - **Motivation Through Achievement:** Make tasks rewarding by allowing participants to see immediate impact (like cleaner surroundings) while also contributing to long-term systemic change.   
    - **Sustainability of Effort:** Encourage challenges that, while accessible, have the potential to grow into larger habits or community initiatives over time.  
    - **Long-Term Mindset:** Favor challenges that build habits, foster ripple effects in communities, or demonstrate how small, repeated actions scale up to systemic change.  
-   - **Brag-Worthy & Shareable:** Favor challenges that participants would feel proud to show to friends or post online — visually clear, socially impressive, and likely to inspire others through positive peer influence.  
+   - **Brag-Worthy & Shareable:** Favor challenges that participants would feel proud to show to friends or post online — visually clear, socially impressive, and likely to inspire others through positive peer influence.
+6. **Conciseness, Brevity, and Succintness**
+   -  **Make sure your challenge description is less than 20 words long, yet descriptive and engaging**
 </CoreDirectives>
 
 <ChainOfThought>

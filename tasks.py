@@ -19,6 +19,7 @@ from PIL import Image
 from io import BytesIO
 from api.cache_utils import invalidate_user_summary_cache # <-- IMPORT cache helper
 from api.search_utils import sync_user_to_algolia
+from google.genai import types
 
 # --- SETUP & CONFIG ---
 setup_logging()
@@ -308,7 +309,13 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
                 if gemini_file_resource.state.name == "FAILED": raise Exception("Gemini File API processing failed.")
                 
                 logging.info("File processed. Generating content...")
-                response = client_instance.models.generate_content(model="gemini-2.5-pro", contents=[prompt, gemini_file_resource])
+                response = client_instance.models.generate_content(
+                    model="gemini-2.5-pro",
+                    contents=[prompt, gemini_file_resource],
+                    config=types.GenerateContentConfig(
+                        thinking_config=types.ThinkingConfig(thinking_budget=32768)
+                    ),
+                )
                 analysis_result_str = response.text
                 
                 redis_client.set("current_analysis_gemini_key_index", current_index)
