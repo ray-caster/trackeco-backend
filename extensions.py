@@ -9,5 +9,5 @@ limiter = Limiter(
     # This option is passed to the Redis client to ensure it decodes responses to strings.
     storage_options={"decode_responses": True},
     # The default storage will be set in main.py from the environment variable.
-    default_limits=["200 per day", "50 per hour"] # A sensible default limit for most endpoints.
+    default_limits=["1000 per day", "300 per hour"] # A sensible default limit for most endpoints.
 )
