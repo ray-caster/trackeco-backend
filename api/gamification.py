@@ -77,7 +77,7 @@ def get_v2_leaderboard_mock(user_id):
 
         return jsonify({
             "leaderboardPage": final_page_dump,
-            "myRank": my_rank_dump
+            "myRank": my_rank_dump,
             "totalUsers": 100
         }), 200
 
