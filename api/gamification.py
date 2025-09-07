@@ -19,13 +19,14 @@ def get_v2_leaderboard(user_id):
     A truly dynamic and stable leaderboard endpoint using cursor-based pagination.
     - Fixes the tie-breaking bug by adding a secondary sort on userId.
     - Replaces fragile .offset() with robust .start_after() cursors.
+    - Uses .get() for limit_to_last() queries as required by the Firestore SDK.
     """
     try:
         start_after_doc_id = request.args.get('startAfterDocId')
         page_size = 20
         my_rank_entry = None
 
-        # --- THE FIX: Add a stable, secondary sort order ---
+        # --- Stable, secondary sort order ---
         # This guarantees that for users with the same score, the order is always the same.
         base_query = db.collection('users').order_by(
             'totalPoints', direction=firestore.Query.DESCENDING
@@ -33,22 +34,18 @@ def get_v2_leaderboard(user_id):
             'userId', direction=firestore.Query.ASCENDING # Unique tie-breaker
         )
 
-        # --- If this is a pagination request ---
+        # --- If this is a pagination request (scrolling down) ---
         if start_after_doc_id:
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
-            # Use the snapshot for cursor-based pagination
             query = base_query.start_after(last_doc_snapshot).limit(page_size)
-            docs = list(query.stream())
+            docs = list(query.stream()) # .stream() is fine here
             
-            # To get the correct rank, we need to count how many are ahead of the cursor
             cursor_points = last_doc_snapshot.to_dict().get("totalPoints", 0)
             
-            # Count users with more points
             rank_above_cursor = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", cursor_points)).count().get()[0][0].value
-            # Count users with the same points but a smaller userId (who came first in the sort)
             rank_at_cursor_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<=", last_doc_snapshot.id)).count().get()[0][0].value
             
             start_rank = rank_above_cursor + rank_at_cursor_level
@@ -66,33 +63,46 @@ def get_v2_leaderboard(user_id):
             user_data = user_doc.to_dict()
             user_points = int(user_data.get("totalPoints", 0))
             
-            # A. Calculate My Rank (this part is now stable)
-            # Count users with more points
+            # A. Calculate My Rank (stable)
             rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", user_points)).count().get()[0][0].value
-            # Count users with the same points but a smaller userId (who came first in the sort)
             rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
             my_rank = rank_above + rank_at_my_level
 
-            # B. Fetch the window of users around me using cursors
+            # B. Fetch the window of users
             # Get the 10 users ranked *before* me
             query_before = base_query.end_before(user_doc).limit_to_last(10)
-            docs_before = list(query_before.stream())
+            
+            # --- THE FIX IS HERE ---
+            # Use .get() instead of .stream() for the limit_to_last() query
+            docs_before = list(query_before.get()) 
             
             # Get me and the 10 users *after* me
             query_after = base_query.start_at(user_doc).limit(11)
-            docs_after = list(query_after.stream())
+            docs_after = list(query_after.stream()) # .stream() is fine here
 
             all_docs = docs_before + docs_after
             start_rank = my_rank - len(docs_before)
 
             entries = get_user_profiles_from_ids([doc.id for doc in all_docs], user_id)
+            
+            # Re-sort in memory to ensure correct order before assigning ranks
+            # This is necessary because we combined two separate queries.
+            entries.sort(key=lambda e: (-e.totalPoints, e.userId))
+            
             for i, entry in enumerate(entries):
                 entry.rank = start_rank + i
             
             my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
 
+        # We need to add the doc ID to the response for pagination
+        final_page = []
+        for entry in entries:
+            entry_dict = entry.model_dump()
+            entry_dict['docId'] = entry.userId # The docId is the userId
+            final_page.append(entry_dict)
+
         return jsonify({
-            "leaderboardPage": [entry.model_dump() for entry in entries],
+            "leaderboardPage": final_page,
             "myRank": my_rank_entry.model_dump() if my_rank_entry else None
         }), 200
 
