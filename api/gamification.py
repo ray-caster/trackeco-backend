@@ -9,7 +9,7 @@ from .auth import token_required
 from .pydantic_models import TeamUpRequest, UserSummary
 # Import the single, canonical helper for fetching user profiles
 from .users import get_user_profiles_from_ids
-
+from extensions import limiter
 gamification_bp = Blueprint('gamification_bp', __name__)
 
 @gamification_bp.route('/v2/leaderboard', methods=['GET'])
