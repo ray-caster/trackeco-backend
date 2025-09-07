@@ -157,12 +157,14 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
             else:
                 challenge_progress[challenge_id] = new_prog
     
-    last_streak_timestamp, current_streak = user_data.get('lastStreakTimestamp'), user_data.get('currentStreak', 0)
-    if last_streak_timestamp:
-        last_streak_date_wib = last_streak_timestamp.astimezone(WIB_TZ).date()
-        if last_streak_date_wib != today_wib_date:
-            current_streak = current_streak + 1 if last_streak_date_wib == (today_wib_date - datetime.timedelta(days=1)) else 1
-    else: current_streak = 1
+    if(new_score+bonus_points>0):
+        last_streak_timestamp, current_streak = user_data.get('lastStreakTimestamp'), user_data.get('currentStreak', 0)
+        if last_streak_timestamp:
+            last_streak_date_wib = last_streak_timestamp.astimezone(WIB_TZ).date()
+            if last_streak_date_wib != today_wib_date:
+                current_streak = current_streak + 1 if last_streak_date_wib == (today_wib_date - datetime.timedelta(days=1)) else 1
+        else: current_streak = 1
+        if current_streak > user_data.get('maxStreak', 0): user_update_data['maxStreak'] = current_streak
     
     is_first_upload = not user_data.get('hasCompletedFirstUpload', False)
     referrer_id = user_data.get('referredBy') if is_first_upload else None
@@ -173,7 +175,7 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
     }
     if is_first_upload: user_update_data['hasCompletedFirstUpload'] = True
     if newly_completed_ids: user_update_data['completedChallengeIds'] = firestore.ArrayUnion(newly_completed_ids)
-    if current_streak > user_data.get('maxStreak', 0): user_update_data['maxStreak'] = current_streak
+    
     
     transaction.update(user_ref, user_update_data)
     transaction.update(upload_ref, {'status': 'COMPLETED', 'aiResult': ai_result_json_string})
@@ -314,10 +316,22 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
                 continue
         
         if not analysis_result_str: raise Exception("All Gemini API keys failed.")
-        
         cleaned_json_string = analysis_result_str.strip().removeprefix("```json").removesuffix("```").strip()
+        is_low_confidence = ai_result.get('baseScore', 0) <= 2 and ai_result.get('effortScore', 0) <= 2
+        if not ai_result.get("error") and is_low_confidence:
+            logging.warning(f"Overriding low-confidence AI result for upload {upload_id}. Original: {cleaned_json_string}")
+            ai_result["error"] = "No significant eco-friendly action was detected."
+            ai_result["finalScore"] = 0
+            # Zero out other score fields for consistency
+            ai_result["baseScore"] = 0
+            ai_result["effortScore"] = 0
+            ai_result["creativityScore"] = 0
+            ai_result["penaltyPoints"] = 0
+            ai_result["challengeUpdates"] = []
+            ai_result["suggestion"] = None
+            cleaned_json_string = json.dumps(ai_result)
         ai_result = json.loads(cleaned_json_string)
-        
+
         if ai_result.get("error"):
             upload_ref.update({'status': 'COMPLETED', 'aiResult': cleaned_json_string})
         else:
