@@ -61,7 +61,8 @@ try:
     # Now we can safely use .get() to extract the nested data.
     hits = results_dict.get('results', [{}])[0].get('hits', [])
     # -----------------------------
-    
+    print(results_dict)
+    print(results)
     if hits:
         print(f"Found {len(hits)} result(s):")
         for hit in hits:
