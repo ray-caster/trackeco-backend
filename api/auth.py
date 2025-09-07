@@ -1,3 +1,5 @@
+# FILE: trackeco-backend/api/auth.py
+
 import logging
 import uuid
 import datetime
@@ -14,6 +16,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from email_utils import send_verification_email
 from .pydantic_models import AuthRequest, VerifyRequest, GoogleAuthRequest, ResendCodeRequest
 from .config import db, JWT_SECRET_KEY, ANDROID_CLIENT_ID
+from extensions import limiter # <-- IMPORT the limiter instance
 
 auth_bp = Blueprint('auth_bp', __name__)
 
@@ -48,6 +51,7 @@ def token_required(f):
 
 # --- Endpoints ---
 @auth_bp.route('/signup', methods=['POST'])
+@limiter.limit("5 per hour") # <-- ADDED RATE LIMIT
 def signup():
     req_data = AuthRequest.model_validate(request.get_json())
     if db.collection('email_mappings').document(req_data.email).get().exists: return jsonify({"error_code": "USER_EXISTS"}), 409
@@ -80,7 +84,6 @@ def verify_email():
     user_id = str(uuid.uuid4())
     referral_code = generate_unique_referral_code()
     
-    # FIX: The user_data dictionary now includes all required fields with default empty values.
     user_data = {
         'userId': user_id, 
         'email': req_data.email, 
@@ -90,7 +93,6 @@ def verify_email():
         'onboardingStep': 0,
         'onboardingComplete': False, 
         'referralCode': referral_code,
-        # --- NEWLY ADDED FIELDS ---
         'totalPoints': 0,
         'currentStreak': 0,
         'maxStreak': 0,
@@ -115,6 +117,7 @@ def verify_email():
     return jsonify({"token": token}), 200
 
 @auth_bp.route('/resend-code', methods=['POST'])
+@limiter.limit("1 per 2 minutes") # <-- ADDED RATE LIMIT
 def resend_code():
     req_data = ResendCodeRequest.model_validate(request.get_json())
     attempt_ref = db.collection('verification_attempts').document(req_data.email)
@@ -130,6 +133,7 @@ def resend_code():
     return jsonify({"error_code": "EMAIL_FAILED"}), 500
 
 @auth_bp.route('/login', methods=['POST'])
+@limiter.limit("10 per minute") # <-- ADDED RATE LIMIT
 def login():
     req_data = AuthRequest.model_validate(request.get_json())
     email_ref = db.collection('email_mappings').document(req_data.email)
@@ -152,6 +156,7 @@ def login():
     return jsonify({"token": token}), 200
 
 @auth_bp.route('/auth/google', methods=['POST'])
+@limiter.limit("10 per minute") # <-- ADDED RATE LIMIT
 def auth_google():
     req_data = GoogleAuthRequest.model_validate(request.get_json())
     idinfo = id_token.verify_oauth2_token(req_data.id_token, google_auth_requests.Request(), ANDROID_CLIENT_ID)
@@ -161,7 +166,6 @@ def auth_google():
     if not user_ref.get().exists:
         referral_code = generate_unique_referral_code()
         
-        # FIX: The user_data dictionary for new Google users now includes all required fields.
         new_user_data = {
             'userId': google_id, 
             'email': user_email, 
@@ -171,12 +175,11 @@ def auth_google():
             'onboardingStep': 0, 
             'onboardingComplete': False, 
             'referralCode': referral_code,
-            # --- NEWLY ADDED FIELDS ---
             'totalPoints': 0,
             'currentStreak': 0,
             'maxStreak': 0,
             'avatarUrl': None,
-            'username': None, # Username is set during onboarding
+            'username': None,
             'completedChallengeIds': [],
             'challengeProgress': {},
             'activeTeamChallenges': [],

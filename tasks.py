@@ -1,3 +1,5 @@
+# FILE: trackeco-backend/tasks.py
+
 import os
 import logging
 import time
@@ -15,6 +17,8 @@ from logging_config import setup_logging
 from api.prompts import AI_ANALYSIS_PROMPT
 from PIL import Image
 from io import BytesIO
+from api.cache_utils import invalidate_user_summary_cache # <-- IMPORT cache helper
+
 # --- SETUP & CONFIG ---
 setup_logging()
 load_dotenv()
@@ -73,8 +77,7 @@ def process_avatar_image(gcs_path, user_id):
             return
 
         image_bytes = source_blob.download_as_bytes()
-        content_type = source_blob.content_type
-
+        
         with Image.open(BytesIO(image_bytes)) as img:
             if img.mode in ('RGBA', 'LA'):
                 background = Image.new(img.mode[:-1], img.size, (255, 255, 255))
@@ -93,6 +96,7 @@ def process_avatar_image(gcs_path, user_id):
         
         user_ref = db.collection('users').document(user_id)
         user_ref.update({'avatarUrl': dest_blob.public_url})
+        invalidate_user_summary_cache(user_id) # <-- Invalidate cache on success
         
         logging.info(f"Successfully updated avatar for user: {user_id}")
         source_blob.delete()
@@ -106,6 +110,7 @@ def award_bonus_points(user_id, amount, reason):
         db = get_db()
         user_ref = db.collection('users').document(user_id)
         user_ref.update({'totalPoints': firestore.Increment(amount)})
+        invalidate_user_summary_cache(user_id) # <-- Invalidate cache on success
         logging.info(f"Awarded {amount} bonus points to {user_id} for: {reason}")
     except Exception as e:
         logging.error(f"Failed to award bonus points to {user_id}: {e}")
@@ -122,7 +127,6 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
     user_data = user_doc.to_dict()
     current_points = user_data.get('totalPoints', 0)
     
-    # FIX: Read the final score directly from the AI's calculation.
     new_score = ai_result.get('finalScore', 0)
     
     user_completed_ids = user_data.get('completedChallengeIds', [])
@@ -173,6 +177,10 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
     
     transaction.update(user_ref, user_update_data)
     transaction.update(upload_ref, {'status': 'COMPLETED', 'aiResult': ai_result_json_string})
+    
+    # Invalidate cache after the transaction commits
+    invalidate_user_summary_cache(user_ref.id)
+    
     return (referrer_id, is_first_upload)
 
 def handle_team_challenge_progress(user_id, ai_result):
@@ -214,40 +222,21 @@ def handle_team_challenge_progress(user_id, ai_result):
         if completed_challenge:
             logging.info(f"Team challenge {team_id} completed!")
             members_map = completed_challenge.get('members', {})
-            
-            # FIX: Filter for only members who have accepted the invitation
             accepted_members = [uid for uid, status in members_map.items() if status == "accepted"]
             member_count = len(accepted_members)
             
             if member_count > 0:
                 total_bonus = completed_challenge.get('bonusPoints', 0)
-                # FIX: Divide points among accepted members
                 points_per_member = total_bonus // member_count
                 reason = f"Team Challenge '{completed_challenge.get('description')}'"
                 
                 batch = db.batch()
                 for member_id in accepted_members:
-                    # Award the divided amount
                     award_bonus_points.delay(member_id, points_per_member, reason)
                     member_ref = db.collection('users').document(member_id)
                     batch.update(member_ref, {'activeTeamChallenges': firestore.ArrayRemove([team_id])})
                 batch.commit()
             break
-
-        completed_challenge = update_progress_in_transaction(db.transaction(), team_challenge_ref)
-        
-        if completed_challenge:
-            logging.info(f"Team challenge {team_id} completed!")
-            members = completed_challenge.get('members', [])
-            bonus = completed_challenge.get('bonusPoints', 0)
-            reason = f"Team Challenge '{completed_challenge.get('description')}'"
-            batch = db.batch()
-            for member_id in members:
-                award_bonus_points.delay(member_id, bonus, reason)
-                member_ref = db.collection('users').document(member_id)
-                batch.update(member_ref, {'activeTeamChallenges': firestore.ArrayRemove([team_id])})
-            batch.commit()
-            break # Assume one video contributes to only one team challenge at a time
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=300, acks_late=True)
 def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_id):
@@ -290,9 +279,8 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         if not redis_client: raise ConnectionError("Cannot connect to Redis for API key management.")
         start_index = int(redis_client.get("current_analysis_gemini_key_index") or 0)
         
-        # This variable needs to be accessible in the finally block
         gemini_file_resource = None
-        client_instance = None # This also needs to be accessible for cleanup
+        client_instance = None 
 
         for i in range(len(ACTIVE_GEMINI_KEYS)):
             current_index = (start_index + i) % len(ACTIVE_GEMINI_KEYS)
@@ -310,16 +298,14 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
                 if gemini_file_resource.state.name == "FAILED": raise Exception("Gemini File API processing failed.")
                 
                 logging.info("File processed. Generating content...")
-                # FIX #1: Use a valid, powerful model for multimodal input
                 response = client_instance.models.generate_content(model="gemini-2.5-pro", contents=[prompt, gemini_file_resource])
                 analysis_result_str = response.text
                 
                 redis_client.set("current_analysis_gemini_key_index", current_index)
                 logging.info(f"Gemini API Key #{current_index + 1} succeeded. Setting as active key.")
-                break # Exit the loop on success
+                break 
             except Exception as e:
                 logging.warning(f"Gemini API Key #{current_index + 1} failed: {e}")
-                # Cleanup the file from this specific failed attempt before retrying
                 if gemini_file_resource and client_instance:
                     try: client_instance.files.delete(name=gemini_file_resource.name)
                     except Exception: pass
@@ -364,8 +350,6 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
             except Exception as move_e: logging.error(f"Failed to move failed file: {move_e}")
         raise self.retry(exc=e)
     finally:
-        # FIX #2 & #3: This block now correctly and safely cleans up resources.
-        # It handles the case where client_instance might not have been created.
         if gemini_file_resource and client_instance:
             try:
                 client_instance.files.delete(name=gemini_file_resource.name) 

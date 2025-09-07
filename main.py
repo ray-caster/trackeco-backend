@@ -1,3 +1,5 @@
+# FILE: trackeco-backend/main.py
+
 import os
 import logging
 from flask import Flask, jsonify
@@ -7,6 +9,7 @@ from pydantic import ValidationError
 from google.cloud import firestore
 from logging_config import setup_logging
 from celery_worker import celery_app
+from extensions import limiter  # <-- IMPORT the new limiter instance
 
 # --- SETUP & CONFIG ---
 # Load environment variables for the Flask app process.
@@ -19,6 +22,12 @@ if not firebase_admin._apps:
     firebase_admin.initialize_app()
 
 app = Flask(__name__)
+
+# --- Initialize Extensions ---
+# Set the Redis URL for the rate limiter from your environment variables.
+limiter.storage_uri = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+limiter.init_app(app) # Initialize the limiter with the Flask app.
+
 celery_app.conf.update(app.config)
 
 # --- Import and Register Blueprints ---
