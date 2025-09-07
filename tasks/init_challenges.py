@@ -2,12 +2,10 @@ import logging
 from google.cloud import firestore
 from dotenv import load_dotenv
 
-from logging_config import setup_logging
 from challenge_generator import generate_challenge_set
 
 # --- SETUP & CONFIG ---
 # This script uses the same environment and credentials as your other scripts.
-setup_logging()
 load_dotenv()
 def run_initial_setup():
     """
