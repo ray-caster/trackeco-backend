@@ -4,7 +4,7 @@ import os
 import logging
 from dotenv import load_dotenv
 from algoliasearch.search.client import SearchClientSync
-
+import json
 # --- SETUP ---
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -56,19 +56,26 @@ try:
     # --- 4. PRINT THE RESULTS ---
     logging.info("Search request completed successfully!")
     print("\n--- SEARCH RESULTS ---")
-    # For multi-search, results are in a list under the 'results' key
-    hits = []
-    if results.results and len(results.results) > 0:
-        hits = results.results[0].hits
+    results_dict = json.loads(results.to_json())
+    
+    # Now we can safely use .get() to extract the nested data.
+    hits = results_dict.get('results', [{}])[0].get('hits', [])
+    # -----------------------------
+    
     if hits:
         print(f"Found {len(hits)} result(s):")
         for hit in hits:
-            # The 'hit' objects are also Pydantic models, but they behave like dicts here.
             print(f"  - objectID: {hit.get('objectID')}, displayName: {hit.get('displayName')}, points: {hit.get('totalPoints')}")
     else:
         print("Query returned 0 results.")
     print("----------------------\n")
     logging.info("✅ Test script finished successfully!")
+
+except Exception as e:
+    # (The error catching part remains the same)
+    logging.error("❌ An error occurred during the test!")
+    logging.error(f"Error Type: {type(e).__name__}")
+    logging.error(f"Error Details: {e}", exc_info=True)
 
 except Exception as e:
     # (The error catching part remains the same)
