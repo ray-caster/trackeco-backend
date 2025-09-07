@@ -326,7 +326,13 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         if not analysis_result_str: raise Exception("All Gemini API keys failed.")
         cleaned_json_string = analysis_result_str.strip().removeprefix("```json").removesuffix("```").strip()
         is_low_confidence = ai_result.get('baseScore', 0) <= 2 and ai_result.get('effortScore', 0) <= 2
-        if not ai_result.get("error") and is_low_confidence:
+        
+        ai_result = json.loads(cleaned_json_string)
+        
+
+        if ai_result.get("error"):
+            upload_ref.update({'status': 'COMPLETED', 'aiResult': cleaned_json_string})
+        elif is_low_confidence:
             logging.warning(f"Overriding low-confidence AI result for upload {upload_id}. Original: {cleaned_json_string}")
             ai_result["error"] = "No significant eco-friendly action was detected."
             ai_result["finalScore"] = 0
@@ -338,10 +344,6 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
             ai_result["challengeUpdates"] = []
             ai_result["suggestion"] = None
             cleaned_json_string = json.dumps(ai_result)
-        ai_result = json.loads(cleaned_json_string)
-
-        if ai_result.get("error"):
-            upload_ref.update({'status': 'COMPLETED', 'aiResult': cleaned_json_string})
         else:
             today_wib_date = datetime.datetime.now(WIB_TZ).date()
             transaction = db.transaction()
