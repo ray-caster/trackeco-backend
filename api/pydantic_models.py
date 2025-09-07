@@ -82,7 +82,7 @@ class TeamChallengeInvitation(BaseModel):
 
 # This is now the single, canonical model for any user summary
 class UserSummary(BaseModel):
-    rank: Union[int, str]
+    rank: int
     displayName: Optional[str] = "Anonymous"
     userId: str
     totalPoints: int = 0
