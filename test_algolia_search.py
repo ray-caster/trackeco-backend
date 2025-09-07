@@ -57,10 +57,13 @@ try:
     logging.info("Search request completed successfully!")
     print("\n--- SEARCH RESULTS ---")
     # For multi-search, results are in a list under the 'results' key
-    hits = results.get('results', [{}])[0].get('hits', [])
+    hits = []
+    if results.results and len(results.results) > 0:
+        hits = results.results[0].hits
     if hits:
         print(f"Found {len(hits)} result(s):")
         for hit in hits:
+            # The 'hit' objects are also Pydantic models, but they behave like dicts here.
             print(f"  - objectID: {hit.get('objectID')}, displayName: {hit.get('displayName')}, points: {hit.get('totalPoints')}")
     else:
         print("Query returned 0 results.")
