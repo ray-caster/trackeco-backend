@@ -10,9 +10,80 @@ from .pydantic_models import TeamUpRequest, UserSummary
 # Import the single, canonical helper for fetching user profiles
 from .users import get_user_profiles_from_ids
 from extensions import limiter
+import random # <-- ADD THIS IMPORT
+from faker import Faker # <-- ADD THIS IMPORT
 gamification_bp = Blueprint('gamification_bp', __name__)
-
 @gamification_bp.route('/v2/leaderboard', methods=['GET'])
+@token_required
+@limiter.exempt
+def get_v2_leaderboard_mock(user_id):
+    """
+    A mock version of the leaderboard endpoint for frontend testing.
+    - Generates 100 users with fake names and random points (1-50).
+    - Inserts the current user with exactly 25 points.
+    - Sorts the list and assigns correct ranks.
+    - Returns the data in the exact same format as the real API.
+    - This does NOT use Firestore.
+    """
+    try:
+        fake = Faker()
+        all_users_data = []
+
+        # 1. Create the current user with specific data
+        current_user_data = {
+            "userId": user_id,
+            "displayName": "My Test User", # Give your user a special name for easy identification
+            "totalPoints": 25,
+            "isCurrentUser": True
+        }
+        all_users_data.append(current_user_data)
+
+        # 2. Generate 99 other random users
+        for _ in range(99):
+            other_user_data = {
+                "userId": str(uuid.uuid4()),
+                "displayName": fake.name(),
+                "totalPoints": random.randint(1, 50), # Random points between 1 and 50
+                "isCurrentUser": False
+            }
+            all_users_data.append(other_user_data)
+        
+        # 3. Sort the list just like Firestore would: by points descending, then userId ascending
+        all_users_data.sort(key=lambda u: (-u['totalPoints'], u['userId']))
+
+        # 4. Create the final Pydantic models, assign ranks, and find the current user's object
+        leaderboard_page = []
+        my_rank_object = None
+
+        for i, user_data in enumerate(all_users_data):
+            rank = i + 1
+            user_summary = UserSummary(
+                rank=rank,
+                userId=user_data['userId'],
+                displayName=user_data['displayName'],
+                totalPoints=user_data['totalPoints'],
+                avatarUrl=f"https://picsum.photos/seed/{user_data['userId']}/200", # Placeholder avatar
+                isCurrentUser=user_data['isCurrentUser'],
+                docId=user_data['userId']
+            )
+            leaderboard_page.append(user_summary)
+
+            if user_summary.isCurrentUser:
+                my_rank_object = user_summary
+
+        # 5. Assemble the final response object
+        final_page_dump = [entry.model_dump() for entry in leaderboard_page]
+        my_rank_dump = my_rank_object.model_dump() if my_rank_object else None
+
+        return jsonify({
+            "leaderboardPage": final_page_dump,
+            "myRank": my_rank_dump
+        }), 200
+
+    except Exception as e:
+        logging.error(f"Error generating mock leaderboard: {e}", exc_info=True)
+        return jsonify({"error": "Could not generate mock leaderboard data."}), 500
+@gamification_bp.route('/v2/leaderboard_real', methods=['GET'])
 @token_required
 @limiter.exempt
 def get_v2_leaderboard(user_id):
