@@ -2,7 +2,9 @@
 import os
 import logging
 from google.cloud import firestore
-from algoliasearch.search.client import SearchClient as SearchClientSync # Use new client
+# --- THIS IS THE FIX ---
+from algoliasearch.search.client import SearchClientSync 
+# --------------------
 from dotenv import load_dotenv
 
 # --- SETUP ---
@@ -18,13 +20,16 @@ ALGOLIA_INDEX_NAME = "users"
 if not all([ALGOLIA_APP_ID, ALGOLIA_ADMIN_API_KEY]):
     raise ValueError("Algolia credentials are not set.")
 
+# --- AND THIS IS THE FIX ---
 client = SearchClientSync(ALGOLIA_APP_ID, ALGOLIA_ADMIN_API_KEY)
+# ------------------------
 
 def reindex_all_users():
     logging.info(f"Starting re-indexing to Algolia index: '{ALGOLIA_INDEX_NAME}'")
     all_users = db.collection('users').stream()
 
     records_to_index = []
+    total_indexed = 0
     for user_doc in all_users:
         user_data = user_doc.to_dict()
         record = {
@@ -37,21 +42,24 @@ def reindex_all_users():
         }
         records_to_index.append(record)
         
+        # Index in batches of 500 for efficiency
         if len(records_to_index) >= 500:
-            # Use the new client.save_objects method
             client.save_objects(
                 index_name=ALGOLIA_INDEX_NAME, objects=records_to_index
             )
             logging.info(f"Indexed a batch of {len(records_to_index)} users...")
+            total_indexed += len(records_to_index)
             records_to_index = []
 
+    # Index any remaining records in the final batch
     if records_to_index:
         client.save_objects(
             index_name=ALGOLIA_INDEX_NAME, objects=records_to_index
         )
         logging.info(f"Indexed final batch of {len(records_to_index)} users.")
+        total_indexed += len(records_to_index)
 
-    logging.info("Full re-indexing complete.")
+    logging.info(f"Full re-indexing complete. Total users indexed: {total_indexed}")
 
 if __name__ == "__main__":
     reindex_all_users()
