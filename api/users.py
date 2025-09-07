@@ -5,7 +5,7 @@ import json
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 import datetime
-from .config import db, storage_client, GCS_BUCKET_NAME, redis_client, algolia_client
+from .config import db, storage_client, GCS_BUCKET_NAME, redis_client, algolia_client, ALGOLIA_INDEX_NAME
 from .auth import token_required
 from .pydantic_models import (
     PublicProfileResponse, 
@@ -97,7 +97,7 @@ def search_users(user_id):
     try:
         # --- THIS IS THE FIX ---
         # Use the correct multi-request format for the search call.
-        results = algolia_client.search([
+        results = algolia_client.search(
             {
                 "indexName": ALGOLIA_INDEX_NAME,
                 "query": query_str,
@@ -106,7 +106,7 @@ def search_users(user_id):
                     "filters": f'NOT userId:{user_id}' # Filter out the current user
                 }
             }
-        ])
+        )
         # -----------------------
 
         # The actual search results are nested inside the response

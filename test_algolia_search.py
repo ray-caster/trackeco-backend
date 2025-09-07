@@ -42,15 +42,17 @@ try:
     
     # --- THIS IS THE FIX ---
     # The search method takes a single dictionary containing a list of requests.
-    results = client.search([
-        {
-            "indexName": ALGOLIA_INDEX_NAME,
-            "query": search_query,
-            "params": {  # request_options are passed as 'params' here
-                "hitsPerPage": 5
+    results = client.search({
+        "requests": [
+            {
+                "indexName": ALGOLIA_INDEX_NAME,
+                "query": search_query,
+                "params": {
+                    "hitsPerPage": 5
+                }
             }
-        }
-    ])
+        ]
+    })
     # -----------------------
     
     # --- 4. PRINT THE RESULTS ---
