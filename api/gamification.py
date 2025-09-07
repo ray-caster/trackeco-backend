@@ -14,12 +14,12 @@ gamification_bp = Blueprint('gamification_bp', __name__)
 
 @gamification_bp.route('/v2/leaderboard', methods=['GET'])
 @token_required
+@limiter.exempt
 def get_v2_leaderboard(user_id):
     """
     A truly dynamic and stable leaderboard endpoint using cursor-based pagination.
     - Fixes the tie-breaking bug by adding a secondary sort on userId.
-    - Replaces fragile .offset() with robust .start_after() cursors.
-    - Uses .get() for limit_to_last() queries as required by the Firestore SDK.
+    - Uses .get() for limit_to_last() queries and correctly reverses the result.
     """
     try:
         start_after_doc_id = request.args.get('startAfterDocId')
@@ -27,21 +27,21 @@ def get_v2_leaderboard(user_id):
         my_rank_entry = None
 
         # --- Stable, secondary sort order ---
-        # This guarantees that for users with the same score, the order is always the same.
         base_query = db.collection('users').order_by(
             'totalPoints', direction=firestore.Query.DESCENDING
         ).order_by(
-            'userId', direction=firestore.Query.ASCENDING # Unique tie-breaker
+            'userId', direction=firestore.Query.ASCENDING
         )
 
         # --- If this is a pagination request (scrolling down) ---
         if start_after_doc_id:
+            # (This part for pagination remains unchanged and correct)
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
             query = base_query.start_after(last_doc_snapshot).limit(page_size)
-            docs = list(query.stream()) # .stream() is fine here
+            docs = list(query.stream())
             
             cursor_points = last_doc_snapshot.to_dict().get("totalPoints", 0)
             
@@ -69,24 +69,22 @@ def get_v2_leaderboard(user_id):
             my_rank = rank_above + rank_at_my_level
 
             # B. Fetch the window of users
-            # Get the 10 users ranked *before* me
             query_before = base_query.end_before(user_doc).limit_to_last(10)
+            docs_before_reversed = list(query_before.get())
             
             # --- THE FIX IS HERE ---
-            # Use .get() instead of .stream() for the limit_to_last() query
-            docs_before = list(query_before.get()) 
+            # The list from limit_to_last() is in reverse order, so we must reverse it back.
+            docs_before = list(reversed(docs_before_reversed))
             
-            # Get me and the 10 users *after* me
             query_after = base_query.start_at(user_doc).limit(11)
-            docs_after = list(query_after.stream()) # .stream() is fine here
+            docs_after = list(query_after.stream())
 
             all_docs = docs_before + docs_after
             start_rank = my_rank - len(docs_before)
 
             entries = get_user_profiles_from_ids([doc.id for doc in all_docs], user_id)
             
-            # Re-sort in memory to ensure correct order before assigning ranks
-            # This is necessary because we combined two separate queries.
+            # Re-sort the combined list in memory to be absolutely certain of the order.
             entries.sort(key=lambda e: (-e.totalPoints, e.userId))
             
             for i, entry in enumerate(entries):
@@ -94,11 +92,10 @@ def get_v2_leaderboard(user_id):
             
             my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
 
-        # We need to add the doc ID to the response for pagination
         final_page = []
         for entry in entries:
             entry_dict = entry.model_dump()
-            entry_dict['docId'] = entry.userId # The docId is the userId
+            entry_dict['docId'] = entry.userId
             final_page.append(entry_dict)
 
         return jsonify({
