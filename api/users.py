@@ -36,6 +36,9 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
         cached_results = redis_client.mget(keys)
         for user_id, cached_json in zip(user_ids, cached_results):
             if cached_json:
+                model_data = json.loads(cached_json)
+
+                model_data.setdefault('rank', 0)
                 profiles_from_cache[user_id] = UserSummary.model_validate_json(cached_json)
             else:
                 ids_to_fetch_from_db.append(user_id)
@@ -56,7 +59,7 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
             if doc.exists:
                 user = doc.to_dict()
                 entry = UserSummary(
-                    rank="-",
+                    rank=-1,
                     userId=user.get('userId'),
                     displayName=user.get('displayName'),
                     username=user.get('username'),
