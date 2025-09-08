@@ -56,9 +56,7 @@ def get_v2_leaderboard(user_id):
 
         total_users = base_query.count().get()[0][0].value
 
-        # --- PAGINATION LOGIC ---
-
-        # --- Scrolling Down (Fetching the next page) ---
+        # --- PAGINATION LOGIC (UNCHANGED AND CORRECT) ---
         if start_after_doc_id:
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
@@ -76,7 +74,6 @@ def get_v2_leaderboard(user_id):
             for i, entry in enumerate(entries):
                 entry.rank = cursor_rank + i + 1
 
-        # --- Scrolling Up (Fetching the previous page) ---
         elif start_before_doc_id:
             first_doc_snapshot = db.collection('users').document(start_before_doc_id).get()
             if not first_doc_snapshot.exists:
@@ -99,45 +96,41 @@ def get_v2_leaderboard(user_id):
                 for i, entry in enumerate(entries):
                     entry.rank = first_item_rank + i
         
-        # --- INITIAL LOAD (Centered on the current user) ---
+        # --- INITIAL LOAD (CENTERED ON THE CURRENT USER) ---
         else:
+            # --- THIS ENTIRE BLOCK HAS BEEN REPLACED WITH SIMPLER, CORRECT LOGIC ---
             user_doc = db.collection('users').document(user_id).get()
             if not user_doc.exists:
                 return jsonify({"error": "Current user not found."}), 404
-
-            # Fetch docs centered on the current user
-            query_before = base_query.end_before(user_doc).limit_to_last(10)
-            docs_before = list(reversed(list(query_before.get())))
             
-            query_after = base_query.start_at(user_doc).limit(11) # 10 after + the user themself
-            docs_after = list(query_after.stream())
-
-            all_docs = docs_before + docs_after
+            user_data = user_doc.to_dict()
+            user_points = int(user_data.get("totalPoints", 0))
             
-            entries = []
-            start_rank = 1 # Default start rank to 1 if the list is somehow empty
+            # 1. Calculate the user's true rank (this part is correct)
+            rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", user_points)).count().get()[0][0].value
+            rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
+            my_rank = rank_above + rank_at_my_level
 
-            if all_docs:
-                # Get the very first document of our centered page
-                first_doc_in_page = all_docs[0]
-                first_doc_points = first_doc_in_page.to_dict().get("totalPoints", 0)
-
-                # Robustly calculate the rank of THAT first document
-                rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", first_doc_points)).count().get()[0][0].value
-                rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", first_doc_points)).where(filter=firestore.FieldFilter("userId", "<=", first_doc_in_page.id)).count().get()[0][0].value
-                start_rank = rank_above + rank_at_level
-                
-                # Fetch profile data for all docs in the page
-                all_doc_ids = [doc.id for doc in all_docs]
-                entries = get_user_profiles_from_ids(all_doc_ids, user_id)
-                # Re-sort to handle potential cache inconsistencies and ensure order
-                entries.sort(key=lambda e: (-e.totalPoints, e.userId))
+            # 2. Calculate the offset to center the user on a page of 21
+            # We want to show 10 users before them. Ensure offset is not negative.
+            offset = max(0, my_rank - 11)
             
-            # Assign ranks incrementally from the calculated starting rank
+            # 3. Fetch the correct slice of the leaderboard using the offset
+            query = base_query.offset(offset).limit(21)
+            docs = list(query.stream())
+
+            # 4. The rank of the first person on our page is simply offset + 1
+            start_rank = offset + 1
+
+            # 5. Get profile data and assign the correct ranks
+            all_doc_ids = [doc.id for doc in docs]
+            entries = get_user_profiles_from_ids(all_doc_ids, user_id)
+            
             for i, entry in enumerate(entries):
                 entry.rank = start_rank + i
             
             my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
+
 
         final_entries = _apply_privacy_filter(entries)
         final_my_rank_entry = _apply_privacy_filter([my_rank_entry])[0] if my_rank_entry else None
@@ -156,6 +149,7 @@ def get_v2_leaderboard(user_id):
     except Exception as e:
         logging.error(f"Error fetching v2 leaderboard: {e}", exc_info=True)
         return jsonify({"error": "Could not load leaderboard data."}), 500
+
     
 @gamification_bp.route('/challenges', methods=['GET'])
 def get_challenges():
