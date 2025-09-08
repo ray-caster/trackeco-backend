@@ -30,6 +30,7 @@ def _apply_privacy_filter(profiles: list[UserSummary]):
         
         if user_settings.get('showDisplayNameInLeaderboard', True) is False:
             profile.displayName = "Anonymous"
+            profile.userId="anonymous"
         
         if user_settings.get('showAvatarInLeaderboard', True) is False:
             profile.avatarUrl = None
