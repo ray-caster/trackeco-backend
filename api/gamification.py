@@ -58,6 +58,7 @@ def get_v2_leaderboard(user_id):
 
         # --- PAGINATION LOGIC (SCROLLING DOWN) ---
         if start_after_doc_id:
+            # ... (This section is correct, no changes needed)
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
@@ -77,15 +78,14 @@ def get_v2_leaderboard(user_id):
 
         # --- PAGINATION LOGIC (SCROLLING UP) ---
         elif start_before_doc_id:
+            # ... (This section is correct, no changes needed)
             first_doc_snapshot = db.collection('users').document(start_before_doc_id).get()
             if not first_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
-            # FIXED: Use .get() here instead of .stream() to prevent crashing.
             query = base_query.end_before(first_doc_snapshot).limit_to_last(page_size)
             docs = list(query.get())
 
-            # We must calculate the rank of the *first* item in our new list to properly rank the page.
             if docs:
                 first_new_doc = docs[0]
                 first_new_doc_points = first_new_doc.to_dict().get("totalPoints", 0)
@@ -109,12 +109,10 @@ def get_v2_leaderboard(user_id):
             user_data = user_doc.to_dict()
             user_points = int(user_data.get("totalPoints", 0))
             
-            # Calculate the current user's absolute rank (1-based)
             rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", user_points)).count().get()[0][0].value
             rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
             my_rank = rank_above + rank_at_my_level
 
-            # FIXED: Use .get() for limit_to_last() to prevent the crash.
             query_before = base_query.end_before(user_doc).limit_to_last(10)
             docs_before = list(query_before.get())
             
@@ -123,14 +121,14 @@ def get_v2_leaderboard(user_id):
 
             all_docs = docs_before + docs_after
             
-            # --- THE EFFICIENT AND CORRECT FIX IS HERE ---
-            # 1. Calculate the rank of the first item in our window.
-            # This is your rank minus the number of people shown before you.
             start_rank = my_rank - len(docs_before)
             
             entries = get_user_profiles_from_ids([doc.id for doc in all_docs], user_id)
             
-            # 2. Assign ranks starting from the calculated start_rank.
+            # --- THIS IS THE CRITICAL FIX ---
+            # Re-sort the list by points (descending) and then ID to guarantee order.
+            entries.sort(key=lambda e: (-e.totalPoints, e.userId))
+            
             for i, entry in enumerate(entries):
                 entry.rank = start_rank + i
             
