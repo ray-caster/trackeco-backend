@@ -53,15 +53,16 @@ def get_v2_leaderboard(user_id):
             'userId', direction=firestore.Query.ASCENDING
         )
 
+        # --- PAGINATION LOGIC ---
+        # --- Scrolling Down ---
         total_users = base_query.count().get()[0][0].value
-
-        # --- PAGINATION LOGIC: SCROLLING DOWN ---
         if start_after_doc_id:
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
             query = base_query.start_after(last_doc_snapshot).limit(page_size)
+            
             docs = list(query.stream())
             
             cursor_points = last_doc_snapshot.to_dict().get("totalPoints", 0)
@@ -69,21 +70,21 @@ def get_v2_leaderboard(user_id):
             rank_at_cursor_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<=", last_doc_snapshot.id)).count().get()[0][0].value
             
             # This is the rank of the cursor (the last item of the previous page)
-            last_item_rank = rank_above_cursor + rank_at_cursor_level
+            start_rank = rank_above_cursor + rank_at_cursor_level
             
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
-                # FIXED: Rank is the last item's rank + 1 + the current position.
-                entry.rank = last_item_rank + 1 + i
+                entry.rank = start_rank + i
 
-        # --- PAGINATION LOGIC: SCROLLING UP ---
+        # --- Scrolling Up ---
         elif start_before_doc_id:
             first_doc_snapshot = db.collection('users').document(start_before_doc_id).get()
             if not first_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
             query = base_query.end_before(first_doc_snapshot).limit_to_last(page_size)
-            docs = list(query.get()) # Use .get() for limit_to_last()
+            docs_reversed = list(query.get())
+            docs = list(reversed(docs_reversed))
 
             if docs:
                 first_new_doc = docs[0]
@@ -92,16 +93,16 @@ def get_v2_leaderboard(user_id):
 
                 rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", first_new_doc_points)).count().get()[0][0].value
                 rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", first_new_doc_points)).where(filter=firestore.FieldFilter("userId", "<=", first_new_doc.id)).count().get()[0][0].value
-                
-                # This is the absolute rank of the first item in our new list.
+                # This is the rank of the first item in our new list
                 first_item_rank = rank_above + rank_at_level
-                
-                entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
-                for i, entry in enumerate(entries):
-                    # FIXED: Assign rank directly starting from the first item's rank.
-                    entry.rank = first_item_rank + i
+                # We need the rank of the item BEFORE our list starts
+                start_rank = first_item_rank - 1
             else:
-                entries = []
+                start_rank = 0
+
+            entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
+            for i, entry in enumerate(entries):
+                entry.rank = start_rank + i
         
         # --- INITIAL LOAD ---
         else:
@@ -117,37 +118,36 @@ def get_v2_leaderboard(user_id):
             my_rank = rank_above + rank_at_my_level
 
             query_before = base_query.end_before(user_doc).limit_to_last(10)
-            docs_before = list(query_before.get()) # Use .get() for limit_to_last()
+            docs_before_reversed = list(query_before.get())
+            docs_before = list(reversed(docs_before_reversed))
             
             query_after = base_query.start_at(user_doc).limit(11)
             docs_after = list(query_after.stream())
 
             all_docs = docs_before + docs_after
 
-            # --- THE FINAL, CORRECTED FIX IS HERE ---
-            # The starting rank is simply your rank minus the number of people shown before you.
-            # This correctly calculates the rank of the first person in the list.
-            start_rank = my_rank - len(docs_before)
+            start_rank = my_rank
             
             entries = get_user_profiles_from_ids([doc.id for doc in all_docs], user_id)
-            # Ensure the combined list is sorted correctly before assigning ranks.
             entries.sort(key=lambda e: (-e.totalPoints, e.userId))
             
-            # Assign ranks sequentially from the calculated starting rank.
+            # 2. Use the consistent rank assignment formula.
             for i, entry in enumerate(entries):
                 entry.rank = start_rank + i
             
             my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
 
-        # ... (final processing and return statement) ...
+        # Add docId to myRank object for consistency
         if my_rank_entry:
             my_rank_entry.docId = my_rank_entry.userId
+
         
         final_entries = _apply_privacy_filter(entries)
         final_my_rank_entry = _apply_privacy_filter([my_rank_entry])[0] if my_rank_entry else None
+        final_page = [entry.model_dump() for entry in final_entries]
         
         return jsonify({
-            "leaderboardPage": [e.model_dump() for e in final_entries],
+            "leaderboardPage": final_page,
             "myRank": final_my_rank_entry.model_dump() if final_my_rank_entry else None,
             "totalUsers": total_users
         }), 200
