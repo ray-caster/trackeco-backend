@@ -74,7 +74,7 @@ def get_v2_leaderboard(user_id):
             
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
-                entry.rank = start_rank + i
+                entry.rank = start_rank + i + 1
 
         # --- Scrolling Up ---
         elif start_before_doc_id:
@@ -95,10 +95,10 @@ def get_v2_leaderboard(user_id):
                 rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", first_new_doc_points)).where(filter=firestore.FieldFilter("userId", "<=", first_new_doc.id)).count().get()[0][0].value
                 # This is the rank of the first item in our new list
                 first_item_rank = rank_above + rank_at_level
-                # We need the rank of the item BEFORE our list starts
-                start_rank = first_item_rank - 1
+                
+                start_rank = first_item_rank
             else:
-                start_rank = 0
+                start_rank = 1
 
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
@@ -127,14 +127,13 @@ def get_v2_leaderboard(user_id):
             all_docs = docs_before + docs_after
 
             # --- THE FIX IS HERE ---
-            # 1. Calculate the rank of the item BEFORE our window starts.
-            # This makes the logic consistent with pagination.
-            start_rank = my_rank - len(docs_before) - 1
+            # 1. Calculate the rank of the very first person in our list of 21.
+            start_rank = my_rank - len(docs_before)
             
             entries = get_user_profiles_from_ids([doc.id for doc in all_docs], user_id)
             entries.sort(key=lambda e: (-e.totalPoints, e.userId))
             
-            # 2. Use the consistent rank assignment formula.
+            # 2. Assign the correct global rank to each user in the list.
             for i, entry in enumerate(entries):
                 entry.rank = start_rank + i
             
