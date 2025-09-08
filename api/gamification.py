@@ -43,6 +43,7 @@ def _apply_privacy_filter(profiles: list[UserSummary]):
 @limiter.exempt
 def get_v2_leaderboard(user_id):
     try:
+        # ... (declarations and pagination logic remains the same) ...
         start_after_doc_id = request.args.get('startAfterDocId')
         start_before_doc_id = request.args.get('startBeforeDocId')
         page_size = 20
@@ -56,9 +57,9 @@ def get_v2_leaderboard(user_id):
         total_users_query = db.collection('users').count()
         total_users = total_users_query.get()[0][0].value
 
-        # --- PAGINATION LOGIC (SCROLLING DOWN) ---
+        # --- PAGINATION (SCROLLING DOWN) ---
         if start_after_doc_id:
-            # ... (This section is correct, no changes needed)
+            # ... (no changes needed)
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
@@ -76,9 +77,9 @@ def get_v2_leaderboard(user_id):
             for i, entry in enumerate(entries):
                 entry.rank = start_rank + 1 + i
 
-        # --- PAGINATION LOGIC (SCROLLING UP) ---
+        # --- PAGINATION (SCROLLING UP) ---
         elif start_before_doc_id:
-            # ... (This section is correct, no changes needed)
+            # ... (no changes needed)
             first_doc_snapshot = db.collection('users').document(start_before_doc_id).get()
             if not first_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
@@ -99,7 +100,7 @@ def get_v2_leaderboard(user_id):
                     entry.rank = start_rank + i
             else:
                 entries = []
-        
+
         # --- INITIAL LOAD ---
         else:
             user_doc = db.collection('users').document(user_id).get()
@@ -121,14 +122,17 @@ def get_v2_leaderboard(user_id):
 
             all_docs = docs_before + docs_after
             
+            # --- THE FINAL FIX TO THE RANKING FORMULA ---
+            # The rank of the first person in the list is your rank, minus how many
+            # people were fetched before you. This gives a 1-based start.
             start_rank = my_rank - len(docs_before)
             
             entries = get_user_profiles_from_ids([doc.id for doc in all_docs], user_id)
             
-            # --- THIS IS THE CRITICAL FIX ---
-            # Re-sort the list by points (descending) and then ID to guarantee order.
+            # 1. First, ENSURE the list is sorted correctly.
             entries.sort(key=lambda e: (-e.totalPoints, e.userId))
             
+            # 2. THEN, assign the calculated ranks.
             for i, entry in enumerate(entries):
                 entry.rank = start_rank + i
             
