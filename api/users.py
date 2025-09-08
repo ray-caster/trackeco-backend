@@ -149,7 +149,7 @@ def get_algolia_search_key(user_id):
         indexName=index_name
     )
     return response.model_dump(), 200
-    
+
 @users_bp.route('/check-username', methods=['POST'])
 @token_required
 def check_username(user_id):
@@ -278,3 +278,28 @@ def get_public_profile(user_id, profile_user_id):
     )
     
     return public_profile.model_dump(), 200
+
+@users_bp.route('/me/quickview', methods=['GET'])
+@token_required
+def get_my_profile_quickview(user_id):
+    """
+    A new, lightweight endpoint to get only the essential profile data
+    needed for the main app UI, like the top bar stats.
+    """
+    user_ref = db.collection('users').document(user_id)
+    user_doc = user_ref.get(['totalPoints', 'currentStreak', 'maxStreak', 'onboardingComplete', 'onboardingStep', 'displayName'])
+
+    if not user_doc.exists:
+        return jsonify({"error": "User not found"}), 404
+
+    user_data = user_doc.to_dict()
+    
+    # Return a minimal JSON object
+    return jsonify({
+        "totalPoints": int(user_data.get("totalPoints", 0)),
+        "currentStreak": user_data.get("currentStreak", 0),
+        "maxStreak": user_data.get("maxStreak", 0),
+        "onboardingComplete": user_data.get("onboardingComplete", False),
+        "onboardingStep": user_data.get("onboardingStep", 0),
+        "displayName": user_data.get("displayName")
+    }), 200
