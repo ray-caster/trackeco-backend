@@ -56,13 +56,14 @@ def get_v2_leaderboard(user_id):
 
         total_users = base_query.count().get()[0][0].value
 
+        # --- PAGINATION LOGIC ---
+
         # --- Scrolling Down (Fetching the next page) ---
         if start_after_doc_id:
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
-            # .stream() is perfectly fine here because we are paginating forward
             query = base_query.start_after(last_doc_snapshot).limit(page_size)
             docs = list(query.stream())
             
@@ -82,8 +83,6 @@ def get_v2_leaderboard(user_id):
                 return jsonify({"error": "Paging document not found."}), 404
             
             query = base_query.end_before(first_doc_snapshot).limit_to_last(page_size)
-            
-            # --- FIX IS HERE: Use .get() instead of .stream() ---
             docs_reversed = query.get()
             docs = list(reversed(docs_reversed))
 
@@ -105,32 +104,36 @@ def get_v2_leaderboard(user_id):
             user_doc = db.collection('users').document(user_id).get()
             if not user_doc.exists:
                 return jsonify({"error": "Current user not found."}), 404
-            
-            user_data = user_doc.to_dict()
-            user_points = int(user_data.get("totalPoints", 0))
-            
-            rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", user_points)).count().get()[0][0].value
-            rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
-            my_rank = rank_above + rank_at_my_level
 
+            # Fetch docs centered on the current user
             query_before = base_query.end_before(user_doc).limit_to_last(10)
+            docs_before = list(reversed(list(query_before.get())))
             
-            # --- FIX IS HERE: Use .get() instead of .stream() ---
-            docs_before_reversed = query_before.get()
-            docs_before = list(reversed(docs_before_reversed))
-            
-            # .stream() is fine for the 'after' query as it moves forward
-            query_after = base_query.start_at(user_doc).limit(11)
+            query_after = base_query.start_at(user_doc).limit(11) # 10 after + the user themself
             docs_after = list(query_after.stream())
 
             all_docs = docs_before + docs_after
-            all_doc_ids = [doc.id for doc in all_docs]
-
-            entries = get_user_profiles_from_ids(all_doc_ids, user_id)
-            entries.sort(key=lambda e: (-e.totalPoints, e.userId))
-
-            start_rank = my_rank - len(docs_before)
             
+            entries = []
+            start_rank = 1 # Default start rank to 1 if the list is somehow empty
+
+            if all_docs:
+                # Get the very first document of our centered page
+                first_doc_in_page = all_docs[0]
+                first_doc_points = first_doc_in_page.to_dict().get("totalPoints", 0)
+
+                # Robustly calculate the rank of THAT first document
+                rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", first_doc_points)).count().get()[0][0].value
+                rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", first_doc_points)).where(filter=firestore.FieldFilter("userId", "<=", first_doc_in_page.id)).count().get()[0][0].value
+                start_rank = rank_above + rank_at_level
+                
+                # Fetch profile data for all docs in the page
+                all_doc_ids = [doc.id for doc in all_docs]
+                entries = get_user_profiles_from_ids(all_doc_ids, user_id)
+                # Re-sort to handle potential cache inconsistencies and ensure order
+                entries.sort(key=lambda e: (-e.totalPoints, e.userId))
+            
+            # Assign ranks incrementally from the calculated starting rank
             for i, entry in enumerate(entries):
                 entry.rank = start_rank + i
             
@@ -153,7 +156,6 @@ def get_v2_leaderboard(user_id):
     except Exception as e:
         logging.error(f"Error fetching v2 leaderboard: {e}", exc_info=True)
         return jsonify({"error": "Could not load leaderboard data."}), 500
-
     
 @gamification_bp.route('/challenges', methods=['GET'])
 def get_challenges():
