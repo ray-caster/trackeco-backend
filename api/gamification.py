@@ -96,7 +96,7 @@ def get_v2_leaderboard(user_id):
                 # This is the rank of the first item in our new list
                 first_item_rank = rank_above + rank_at_level
                 # We need the rank of the item BEFORE our list starts
-                start_rank = first_item_rank - 1
+                start_rank = first_item_rank 
             else:
                 start_rank = 0
 
@@ -129,7 +129,7 @@ def get_v2_leaderboard(user_id):
             # --- THE FIX IS HERE ---
             # 1. Calculate the rank of the item BEFORE our window starts.
             # This makes the logic consistent with pagination.
-            start_rank = my_rank - len(docs_before) - 1
+            start_rank = my_rank - len(docs_before) 
             
             entries = get_user_profiles_from_ids([doc.id for doc in all_docs], user_id)
             entries.sort(key=lambda e: (-e.totalPoints, e.userId))
