@@ -259,7 +259,8 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
     bucket = storage_client.bucket(bucket_name)
     source_blob = bucket.blob(gcs_filename)
     temp_local_path = f"/tmp/{os.path.basename(gcs_filename)}"
-    
+    gemini_file_resource = None
+    client_instance = None 
     try:
         upload_doc = upload_ref.get()
         if not upload_doc.exists or upload_doc.to_dict().get('status') != 'PENDING_ANALYSIS':
@@ -290,8 +291,7 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         if not redis_client: raise ConnectionError("Cannot connect to Redis for API key management.")
         start_index = int(redis_client.get("current_analysis_gemini_key_index") or 0)
         
-        gemini_file_resource = None
-        client_instance = None 
+        
 
         for i in range(len(ACTIVE_GEMINI_KEYS)):
             current_index = (start_index + i) % len(ACTIVE_GEMINI_KEYS)
