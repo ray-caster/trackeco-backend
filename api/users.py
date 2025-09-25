@@ -32,9 +32,10 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
     profiles_from_cache = {}
     ids_to_fetch_from_db = []
 
-    if redis_client:
+    redis_conn = redis_client()
+    if redis_conn:
         keys = [get_user_summary_cache_key(uid) for uid in user_ids]
-        cached_results = redis_client.mget(keys)
+        cached_results = redis_conn.mget(keys)
         for user_id, cached_json in zip(user_ids, cached_results):
             if cached_json:
                 model_data = json.loads(cached_json)
@@ -52,7 +53,7 @@ def get_user_profiles_from_ids(user_ids, current_user_id=None):
         refs = (db.collection('users').document(str(uid)) for uid in ids_to_fetch_from_db)
         docs = db.get_all(refs)
         
-        pipe = redis_client.pipeline() if redis_client else None
+        pipe = redis_conn.pipeline() if redis_conn else None
         
         for doc in docs:
             if doc.exists:
@@ -209,6 +210,9 @@ def get_my_profile(user_id):
         return jsonify({"error": "User not found"}), 404
 
     user_data = user_doc.to_dict()
+    
+    # Debug logging to see what values are being read from Firestore
+    logging.debug(f"Full profile for user {user_id}: onboardingComplete={user_data.get('onboardingComplete')}, onboardingStep={user_data.get('onboardingStep')}")
 
     invitation_ids = user_data.get('teamChallengeInvitations', [])
     invitations = []
@@ -293,6 +297,9 @@ def get_my_profile_quickview(user_id):
         return jsonify({"error": "User not found"}), 404
 
     user_data = user_doc.to_dict()
+    
+    # Debug logging to see what values are being read from Firestore
+    logging.debug(f"QuickView for user {user_id}: onboardingComplete={user_data.get('onboardingComplete')}, onboardingStep={user_data.get('onboardingStep')}")
     
     # Return a minimal JSON object
     return jsonify({

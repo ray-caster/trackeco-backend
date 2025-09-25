@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify
 from google.cloud import firestore
 
 from .pydantic_models import FriendRequest, FriendResponseRequest, ContactHashesRequest
-from .config import db
+from dependencies import db
 from .auth import token_required
 from .users import get_user_profiles_from_ids
 from .notifications import send_notification

@@ -156,8 +156,9 @@ def get_v2_leaderboard(user_id):
 def get_challenges():
     """Fetches the list of currently active challenges, with caching."""
     cache_key = "challenges_cache"
-    if redis_client:
-        cached_challenges = redis_client.get(cache_key)
+    redis_conn = redis_client()
+    if redis_conn:
+        cached_challenges = redis_conn.get(cache_key)
         if cached_challenges:
             return jsonify(json.loads(cached_challenges)), 200
             
@@ -167,8 +168,8 @@ def get_challenges():
     if not active_challenges:
         return jsonify({"error": "No active challenges found"}), 404
         
-    if redis_client:
-        redis_client.set(cache_key, json.dumps(active_challenges, default=str), ex=3600) # Cache for 1 hour
+    if redis_conn:
+        redis_conn.set(cache_key, json.dumps(active_challenges, default=str), ex=3600) # Cache for 1 hour
         
     return jsonify(active_challenges), 200
 

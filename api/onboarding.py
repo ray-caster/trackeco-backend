@@ -67,8 +67,16 @@ def onboarding_referral(user_id):
 @onboarding_bp.route('/finish', methods=['POST'])
 @token_required
 def onboarding_finish(user_id):
-    db.collection('users').document(user_id).update({'onboardingStep': 4, 'onboardingComplete': True})
-    return jsonify({"message": "Onboarding complete"}), 200
+    import logging
+    try:
+        # Add debug logging to track the update operation
+        logging.debug(f"Updating user {user_id} onboarding: step=4, complete=True")
+        db.collection('users').document(user_id).update({'onboardingStep': 4, 'onboardingComplete': True})
+        logging.debug(f"Successfully updated user {user_id} onboarding status")
+        return jsonify({"message": "Onboarding complete"}), 200
+    except Exception as e:
+        logging.error(f"Failed to update onboarding status for user {user_id}: {str(e)}")
+        return jsonify({"error": "Failed to complete onboarding"}), 500
 
 def health_check():
     """

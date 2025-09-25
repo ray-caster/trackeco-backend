@@ -8,7 +8,7 @@ from google.cloud import firestore
 from main import celery_app
 
 # Import all necessary clients and health checks from other modules
-from .config import db, storage_client, redis_client, GCS_BUCKET_NAME, ACTIVE_GEMINI_KEYS
+from dependencies import db, storage_client, redis_client, GCS_BUCKET_NAME, ACTIVE_GEMINI_KEYS
 from .auth import health_check as auth_health_check
 from .onboarding import health_check as onboarding_health_check
 from .social import health_check as social_health_check
@@ -19,9 +19,10 @@ admin_bp = Blueprint('admin_bp', __name__)
 
 # --- Health Check Functions (External Services) ---
 def check_redis():
-    if not redis_client: return {"status": "ERROR", "details": "Redis client is not configured."}
+    redis_conn = redis_client()
+    if not redis_conn: return {"status": "ERROR", "details": "Redis client is not configured."}
     try:
-        redis_client.ping(); return {"status": "OK", "details": "Ping successful."}
+        redis_conn.ping(); return {"status": "OK", "details": "Ping successful."}
     except Exception as e: return {"status": "ERROR", "details": f"Failed to ping Redis server: {str(e)}"}
 
 def check_gemini_api():
