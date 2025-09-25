@@ -1,13 +1,12 @@
 # FILE: trackeco-backend/extensions.py
 
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from flask_compress import Compress
+from api.rate_limiter import auth_rate_limit, data_modification_rate_limit, data_retrieval_rate_limit, limit
 
-limiter = Limiter(
-    # The default key is the IP address of the user making the request.
-    key_func=get_remote_address,
-    # This option is passed to the Redis client to ensure it decodes responses to strings.
-    storage_options={"decode_responses": True},
-    # The default storage will be set in main.py from the environment variable.
-    default_limits=["1000 per day", "300 per hour"] # A sensible default limit for most endpoints.
-)
+# Backward compatibility with existing Flask-Limiter decorators
+limiter = type('Limiter', (), {
+    'limit': limit,
+    'exempt': lambda f: f  # No-op exempt decorator
+})()
+
+compress = Compress()

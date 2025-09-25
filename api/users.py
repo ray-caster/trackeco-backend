@@ -24,67 +24,10 @@ from .cache_utils import get_user_summary_cache_key, invalidate_user_summary_cac
 def get_user_profiles_from_ids(user_ids, current_user_id=None):
     """
     The single, canonical helper function to fetch a list of user profiles.
-    IMPLEMENTATION: Includes Redis caching and now populates the docId field.
+    IMPLEMENTATION: Uses optimized Redis caching with stampede protection.
     """
-    if not user_ids:
-        return []
-
-    profiles_from_cache = {}
-    ids_to_fetch_from_db = []
-
-    redis_conn = redis_client()
-    if redis_conn:
-        keys = [get_user_summary_cache_key(uid) for uid in user_ids]
-        cached_results = redis_conn.mget(keys)
-        for user_id, cached_json in zip(user_ids, cached_results):
-            if cached_json:
-                model_data = json.loads(cached_json)
-                model_data.setdefault('rank', 0)
-                model_data.setdefault('currentStreak', 0)
-                model_data['docId'] = user_id
-                profiles_from_cache[user_id] = UserSummary.model_validate(model_data)
-            else:
-                ids_to_fetch_from_db.append(user_id)
-    else:
-        ids_to_fetch_from_db = user_ids
-
-    profiles_from_db = []
-    if ids_to_fetch_from_db:
-        refs = (db.collection('users').document(str(uid)) for uid in ids_to_fetch_from_db)
-        docs = db.get_all(refs)
-        
-        pipe = redis_conn.pipeline() if redis_conn else None
-        
-        for doc in docs:
-            if doc.exists:
-                user = doc.to_dict()
-                entry = UserSummary(
-                    rank=0,
-                    userId=user.get('userId'),
-                    # --- THE FIX ---
-                    # The docId is the same as the userId.
-                    docId=user.get('userId'),
-                    displayName=user.get('displayName'),
-                    username=user.get('username'),
-                    avatarUrl=user.get('avatarUrl'),
-                    currentStreak=int(user.get('currentStreak', 0)),
-                    totalPoints=int(user.get('totalPoints', 0)),
-                )
-                profiles_from_db.append(entry)
-                if pipe:
-                    key = get_user_summary_cache_key(user.get('userId'))
-                    cache_data = entry.model_dump(exclude={'rank', 'isCurrentUser', 'docId'})
-                    pipe.set(key, json.dumps(cache_data), ex=300)
-        
-        if pipe:
-            pipe.execute()
-
-    all_profiles_map = {p.userId: p for p in list(profiles_from_cache.values()) + profiles_from_db}
-    
-    if current_user_id and current_user_id in all_profiles_map:
-        all_profiles_map[current_user_id].isCurrentUser = True
-
-    return [all_profiles_map[uid] for uid in user_ids if uid in all_profiles_map]
+    from .cache_utils import get_user_profiles_from_ids_optimized
+    return get_user_profiles_from_ids_optimized(user_ids, current_user_id)
 
 users_bp = Blueprint('users_bp', __name__)
 

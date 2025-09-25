@@ -8,6 +8,7 @@ from .pydantic_models import InitiateUploadRequest, UploadCompleteRequest
 from .config import db, storage_client, tasks_client, GCP_PROJECT_ID, GCP_QUEUE_LOCATION, GCP_QUEUE_ID, WORKER_TARGET_URL, GCS_BUCKET_NAME
 from .auth import token_required
 from .error_utils import create_error_response, handle_exception, not_found_error, server_error
+from .pagination_utils import validate_pagination_params, paginate_list, create_pagination_response
 
 core_bp = Blueprint('core_bp', __name__)
 
@@ -125,24 +126,66 @@ def process_task_endpoint():
 @token_required
 def get_history(user_id):
     try:
+        # Get pagination parameters
+        limit = request.args.get('limit', type=int)
+        cursor = request.args.get('cursor')
+        
+        # Validate pagination parameters
+        limit, cursor = validate_pagination_params(limit, cursor)
+        
         # This query requires a composite index in Firestore on (userId, timestamp desc)
         query = db.collection('uploads').where(
             filter=firestore.FieldFilter("userId", "==", user_id)
         ).order_by(
             'timestamp', direction=firestore.Query.DESCENDING
-        ).limit(20)
+        )
+        
+        # Get total count for pagination metadata
+        total_count_query = db.collection('uploads').where(
+            filter=firestore.FieldFilter("userId", "==", user_id)
+        )
+        total_count = total_count_query.count().get()[0][0].value
+        
+        # Apply pagination
+        if cursor:
+            try:
+                cursor_data = parse_cursor(cursor)
+                start_after_timestamp = datetime.datetime.fromisoformat(cursor_data.get('start_after_timestamp'))
+                query = query.start_after({'timestamp': start_after_timestamp}).limit(limit)
+            except Exception:
+                # Invalid cursor, fall back to first page
+                query = query.limit(limit)
+        else:
+            query = query.limit(limit)
         
         results = []
+        last_timestamp = None
+        
         for doc in query.stream():
             data = doc.to_dict()
             # Convert any datetime objects to ISO 8601 string format for JSON
             for key, value in data.items():
                 if isinstance(value, datetime.datetime):
                     data[key] = value.isoformat() + "Z"
+                    last_timestamp = value
             results.append(data)
-            
-        return jsonify(results), 200
+        
+        # Generate next cursor if there are more results
+        next_cursor = None
+        has_more = len(results) == limit and last_timestamp is not None
+        
+        if has_more:
+            cursor_data = {
+                "start_after_timestamp": last_timestamp.isoformat(),
+                "total_count": total_count
+            }
+            next_cursor = generate_cursor(cursor_data)
+        
+        response = create_pagination_response(results, next_cursor, has_more, total_count)
+        return jsonify(response), 200
+        
     except Exception as e:
+        logging.error(f"Error fetching history for user {user_id}: {e}", exc_info=True)
         return handle_exception(e, "get_history endpoint")
 
 

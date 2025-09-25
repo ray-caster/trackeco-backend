@@ -9,6 +9,8 @@ from .auth import token_required
 from .pydantic_models import TeamUpRequest, UserSummary, V2LeaderboardResponse
 # Import the single, canonical helper for fetching user profiles
 from .users import get_user_profiles_from_ids
+from .leaderboard_counters import get_leaderboard_stats
+from .pagination_utils import validate_pagination_params, paginate_list, create_pagination_response
 from extensions import limiter
 
 gamification_bp = Blueprint('gamification_bp', __name__)
@@ -55,11 +57,20 @@ def get_v2_leaderboard(user_id):
             'userId', direction=firestore.Query.ASCENDING
         )
 
-        total_users = base_query.count().get()[0][0].value
+        # Get pre-calculated total users from denormalized counters
+        stats = get_leaderboard_stats()
+        total_users = stats.get('totalUsers', 0)
 
-        # --- PAGINATION LOGIC (UNCHANGED AND CORRECT) ---
+        # Use leaderboard collection for queries instead of users collection
+        base_query = db.collection('leaderboard').order_by(
+            'totalPoints', direction=firestore.Query.DESCENDING
+        ).order_by(
+            'userId', direction=firestore.Query.ASCENDING
+        )
+
+        # --- PAGINATION LOGIC (UPDATED FOR DENORMALIZED COUNTERS) ---
         if start_after_doc_id:
-            last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
+            last_doc_snapshot = db.collection('leaderboard').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
@@ -67,16 +78,22 @@ def get_v2_leaderboard(user_id):
             docs = list(query.stream())
             
             cursor_points = last_doc_snapshot.to_dict().get("totalPoints", 0)
-            rank_above_cursor = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", cursor_points)).count().get()[0][0].value
-            rank_at_cursor_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<=", last_doc_snapshot.id)).count().get()[0][0].value
-            cursor_rank = rank_above_cursor + rank_at_cursor_level
+            # Use pre-calculated rank from leaderboard document if available
+            cursor_rank_data = last_doc_snapshot.to_dict().get("rank", {})
+            if cursor_rank_data:
+                cursor_rank = cursor_rank_data.get('position', 0)
+            else:
+                # Fallback: calculate rank using optimized query
+                rank_above_cursor = db.collection('leaderboard').where("totalPoints", ">", cursor_points).count().get()[0][0].value
+                rank_at_cursor_level = db.collection('leaderboard').where("totalPoints", "==", cursor_points).where("userId", "<=", last_doc_snapshot.id).count().get()[0][0].value
+                cursor_rank = rank_above_cursor + rank_at_cursor_level
             
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
                 entry.rank = cursor_rank + i + 1
 
         elif start_before_doc_id:
-            first_doc_snapshot = db.collection('users').document(start_before_doc_id).get()
+            first_doc_snapshot = db.collection('leaderboard').document(start_before_doc_id).get()
             if not first_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
@@ -89,9 +106,15 @@ def get_v2_leaderboard(user_id):
                 first_new_doc = docs[0]
                 first_new_doc_points = first_new_doc.to_dict().get("totalPoints", 0)
 
-                rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", first_new_doc_points)).count().get()[0][0].value
-                rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", first_new_doc_points)).where(filter=firestore.FieldFilter("userId", "<=", first_new_doc.id)).count().get()[0][0].value
-                first_item_rank = rank_above + rank_at_level
+                # Use pre-calculated rank if available
+                first_rank_data = first_new_doc.to_dict().get("rank", {})
+                if first_rank_data:
+                    first_item_rank = first_rank_data.get('position', 0)
+                else:
+                    # Fallback: calculate rank using optimized query
+                    rank_above = db.collection('leaderboard').where("totalPoints", ">", first_new_doc_points).count().get()[0][0].value
+                    rank_at_level = db.collection('leaderboard').where("totalPoints", "==", first_new_doc_points).where("userId", "<=", first_new_doc.id).count().get()[0][0].value
+                    first_item_rank = rank_above + rank_at_level
 
                 entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
                 for i, entry in enumerate(entries):
@@ -99,7 +122,6 @@ def get_v2_leaderboard(user_id):
         
         # --- INITIAL LOAD (CENTERED ON THE CURRENT USER) ---
         else:
-            # --- THIS ENTIRE BLOCK HAS BEEN REPLACED WITH SIMPLER, CORRECT LOGIC ---
             user_doc = db.collection('users').document(user_id).get()
             if not user_doc.exists:
                 return jsonify({"error": "Current user not found."}), 404
@@ -107,13 +129,12 @@ def get_v2_leaderboard(user_id):
             user_data = user_doc.to_dict()
             user_points = int(user_data.get("totalPoints", 0))
             
-            # 1. Calculate the user's true rank (this part is correct)
-            rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", user_points)).count().get()[0][0].value
-            rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
+            # 1. Calculate the user's rank using optimized leaderboard query
+            rank_above = db.collection('leaderboard').where("totalPoints", ">", user_points).count().get()[0][0].value
+            rank_at_my_level = db.collection('leaderboard').where("totalPoints", "==", user_points).where("userId", "<=", user_id).count().get()[0][0].value
             my_rank = rank_above + rank_at_my_level
 
             # 2. Calculate the offset to center the user on a page of 21
-            # We want to show 10 users before them. Ensure offset is not negative.
             offset = max(0, my_rank - 11)
             
             # 3. Fetch the correct slice of the leaderboard using the offset
@@ -154,24 +175,48 @@ def get_v2_leaderboard(user_id):
     
 @gamification_bp.route('/challenges', methods=['GET'])
 def get_challenges():
-    """Fetches the list of currently active challenges, with caching."""
-    cache_key = "challenges_cache"
-    redis_conn = redis_client()
-    if redis_conn:
-        cached_challenges = redis_conn.get(cache_key)
-        if cached_challenges:
-            return jsonify(json.loads(cached_challenges)), 200
-            
-    query = db.collection('challenges').where(filter=firestore.FieldFilter('isActive', '==', True))
-    active_challenges = [doc.to_dict() for doc in query.stream()]
-    
-    if not active_challenges:
-        return jsonify({"error": "No active challenges found"}), 404
+    """Fetches the list of currently active challenges, with pagination support."""
+    try:
+        # Get pagination parameters
+        limit = request.args.get('limit', type=int)
+        cursor = request.args.get('cursor')
         
-    if redis_conn:
-        redis_conn.set(cache_key, json.dumps(active_challenges, default=str), ex=3600) # Cache for 1 hour
+        # Validate pagination parameters
+        limit, cursor = validate_pagination_params(limit, cursor)
         
-    return jsonify(active_challenges), 200
+        cache_key = "challenges_cache"
+        redis_conn = redis_client()
+        
+        # Check cache first
+        if redis_conn:
+            cached_challenges = redis_conn.get(cache_key)
+            if cached_challenges:
+                active_challenges = json.loads(cached_challenges)
+                # Apply pagination to cached data
+                page_data, next_cursor, has_more = paginate_list(active_challenges, limit, cursor)
+                response = create_pagination_response(page_data, next_cursor, has_more, len(active_challenges))
+                return jsonify(response), 200
+        
+        # Fetch from database if not in cache
+        query = db.collection('challenges').where(filter=firestore.FieldFilter('isActive', '==', True))
+        active_challenges = [doc.to_dict() for doc in query.stream()]
+        
+        if not active_challenges:
+            return jsonify({"error": "No active challenges found"}), 404
+        
+        # Cache the full list
+        if redis_conn:
+            redis_conn.set(cache_key, json.dumps(active_challenges, default=str), ex=3600) # Cache for 1 hour
+        
+        # Apply pagination
+        page_data, next_cursor, has_more = paginate_list(active_challenges, limit, cursor)
+        response = create_pagination_response(page_data, next_cursor, has_more, len(active_challenges))
+        
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logging.error(f"Error fetching challenges: {e}")
+        return jsonify({"error": "Could not load challenges"}), 500
 
 
 @gamification_bp.route('/challenges/team-up', methods=['POST'])

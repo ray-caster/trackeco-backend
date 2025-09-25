@@ -1,4 +1,5 @@
 Flask
+flask-compress
 gunicorn
 python-dotenv
 Werkzeug
@@ -31,3 +32,6 @@ Werkzeug
 
 # Email Service
 sib-api-v3-sdk
+
+# Retry logic with exponential backoff
+tenacity

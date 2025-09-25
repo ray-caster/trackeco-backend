@@ -17,7 +17,7 @@ from .email_utils import send_verification_email
 from .pydantic_models import AuthRequest, VerifyRequest, GoogleAuthRequest, ResendCodeRequest
 from .config import db, JWT_SECRET_KEYS, ANDROID_CLIENT_ID
 from .sanitization import sanitize_email, sanitize_string, sanitize_username
-from extensions import limiter # <-- IMPORT the limiter instance
+from api.rate_limiter import auth_rate_limit, limit
 from tasks import sync_user_to_algolia_task
 auth_bp = Blueprint('auth_bp', __name__)
 
@@ -64,7 +64,7 @@ def token_required(f):
 
 # --- Endpoints ---
 @auth_bp.route('/signup', methods=['POST'])
-@limiter.limit("5 per hour") # <-- ADDED RATE LIMIT
+@auth_rate_limit
 def signup():
     req_data = AuthRequest.model_validate(request.get_json())
     
@@ -144,7 +144,7 @@ def verify_email():
     return jsonify({"token": token}), 200
 
 @auth_bp.route('/resend-code', methods=['POST'])
-@limiter.limit("1 per 2 minutes") # <-- ADDED RATE LIMIT
+@limit("1 per 2 minutes")
 def resend_code():
     req_data = ResendCodeRequest.model_validate(request.get_json())
     
@@ -165,7 +165,7 @@ def resend_code():
     return jsonify({"error_code": "EMAIL_FAILED"}), 500
 
 @auth_bp.route('/login', methods=['POST'])
-@limiter.limit("10 per minute") # <-- ADDED RATE LIMIT
+@auth_rate_limit
 def login():
     req_data = AuthRequest.model_validate(request.get_json())
     
@@ -193,7 +193,7 @@ def login():
     return jsonify({"token": token}), 200
 
 @auth_bp.route('/auth/google', methods=['POST'])
-@limiter.limit("10 per minute") # <-- ADDED RATE LIMIT
+@auth_rate_limit
 def auth_google():
     req_data = GoogleAuthRequest.model_validate(request.get_json())
     idinfo = id_token.verify_oauth2_token(req_data.id_token, google_auth_requests.Request(), ANDROID_CLIENT_ID)

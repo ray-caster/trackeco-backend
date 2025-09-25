@@ -11,7 +11,6 @@ from firebase_init import initialize_firebase
 from dotenv import load_dotenv
 from api.prompts import CHALLENGE_GENERATION_PROMPT
 import pytz
-import redis
 # --- SETUP & CONFIG ---
 try:
     from logging_config import setup_logging
@@ -27,15 +26,16 @@ try:
     ACTIVE_GEMINI_KEYS = [key for key in GEMINI_API_KEYS if key]
     if not ACTIVE_GEMINI_KEYS:
         raise ValueError("No GEMINI_API_KEY environment variables found.")
-    redis_client = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
-    redis_client.ping()
+    
+    # Use centralized Redis connection from dependencies
+    from dependencies import redis_client
+    redis_conn = redis_client()
+    if not redis_conn:
+        raise ConnectionError("Failed to connect to Redis using centralized connection pool")
+    redis_conn.ping()
+    logging.info("Successfully connected to Redis using centralized connection pool")
 except Exception as e:
     logging.critical(f"FATAL: Script setup failed. Error: {e}", exc_info=True)
-    exit()
-    
-except Exception as e:
-    logging.critical(f"FATAL: Challenge generator could not connect to Redis. Error: {e}")
-    redis_client = None
     exit()
 
 
@@ -43,7 +43,7 @@ def generate_new_challenge_from_ai(timescale, challenge_type, previous_descripti
     """Calls Gemini to generate a challenge based on specific criteria."""
     if not ACTIVE_GEMINI_KEYS:
         raise Exception("No active Gemini API keys found.")
-    start_index = int(redis_client.get("current_challenge_gemini_key_index") or 0)
+    start_index = int(redis_conn.get("current_challenge_gemini_key_index") or 0)
     logging.info(f"Attempting to generate a new '{challenge_type}' challenge for timescale '{timescale}' from Gemini API...")
     for i in range(len(ACTIVE_GEMINI_KEYS)):
         current_index = (start_index + i) % len(ACTIVE_GEMINI_KEYS)
@@ -62,7 +62,7 @@ def generate_new_challenge_from_ai(timescale, challenge_type, previous_descripti
             logging.info(f"Successfully received response from Gemini API Key #{i + 1}.")
             raw_text = response.text
             logging.debug(f"Raw Gemini response: {raw_text}")
-            redis_client.set("current_challenge_gemini_key_index", current_index)
+            redis_conn.set("current_challenge_gemini_key_index", current_index)
             cleaned_json_string = raw_text.strip().removeprefix("```json").removesuffix("```").strip()
             parsed_json = json.loads(cleaned_json_string)
             logging.info(f"Successfully parsed JSON from Gemini response: {parsed_json}")
@@ -165,7 +165,7 @@ if __name__ == '__main__':
     print(f"[{datetime.datetime.now()}] Running challenge generator: type='{args.type}', simple={args.simple_count}, progress={args.progress_count}...")
     lock_key = "lock:challenge_generator"
     # nx=True means set only if the key does not exist. ex=60 means expire after 60 seconds.
-    is_lock_acquired = redis_client.set(lock_key, "running", ex=60, nx=True)
+    is_lock_acquired = redis_conn.set(lock_key, "running", ex=60, nx=True)
     
     if not is_lock_acquired:
         print(f"[{datetime.datetime.now()}] Challenge generation is already in progress. Exiting.")
@@ -181,5 +181,5 @@ if __name__ == '__main__':
             print(f"[{datetime.datetime.now()}] Failure. Check log file for details.")
     finally:
         # Always release the lock when done
-        redis_client.delete(lock_key)
+        redis_conn.delete(lock_key)
         print(f"[{datetime.datetime.now()}] Released lock.")

@@ -21,6 +21,9 @@ from io import BytesIO
 from api.cache_utils import invalidate_user_summary_cache # <-- IMPORT cache helper
 from api.search_utils import sync_user_to_algolia
 from google.genai import types
+import tenacity
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import requests
 
 # --- SETUP & CONFIG ---
 setup_logging()
@@ -33,16 +36,85 @@ ACTIVE_GEMINI_KEYS = [key for key in GEMINI_API_KEYS if key]
 GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")
 WIB_TZ = pytz.timezone('Asia/Jakarta')
 
+# --- NETWORK CONFIGURATION ---
+GEMINI_TIMEOUT = 10  # seconds
+GCS_TIMEOUT = 10  # seconds
+
+# --- RETRY CONFIGURATION ---
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_MIN = 1  # seconds
+RETRY_BACKOFF_MAX = 10  # seconds
+
+# Retryable exception types for network operations
+RETRYABLE_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.HTTPError,
+    TimeoutError,
+    ConnectionError,
+    ConnectionRefusedError,
+    ConnectionAbortedError,
+    ConnectionResetError,
+)
+
+# Custom retry decorator for Gemini API calls
+gemini_retry = retry(
+    stop=stop_after_attempt(RETRY_ATTEMPTS),
+    wait=wait_exponential(min=RETRY_BACKOFF_MIN, max=RETRY_BACKOFF_MAX),
+    retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
+    before_sleep=lambda retry_state: logging.warning(
+        f"Gemini API call failed. Retry attempt {retry_state.attempt_number}/{RETRY_ATTEMPTS}. "
+        f"Error: {retry_state.outcome.exception()}"
+    ),
+    after=lambda retry_state: logging.info(
+        f"Gemini API call succeeded after {retry_state.attempt_number} attempts"
+    ) if retry_state.outcome else None,
+)
+
+# Custom retry decorator for GCS operations
+gcs_retry = retry(
+    stop=stop_after_attempt(RETRY_ATTEMPTS),
+    wait=wait_exponential(min=RETRY_BACKOFF_MIN, max=RETRY_BACKOFF_MAX),
+    retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
+    before_sleep=lambda retry_state: logging.warning(
+        f"GCS operation failed. Retry attempt {retry_state.attempt_number}/{RETRY_ATTEMPTS}. "
+        f"Error: {retry_state.outcome.exception()}"
+    ),
+    after=lambda retry_state: logging.info(
+        f"GCS operation succeeded after {retry_state.attempt_number} attempts"
+    ) if retry_state.outcome else None,
+)
+
+# GCS helper functions with retry logic
+@gcs_retry
+def gcs_blob_exists(blob):
+    """Check if a GCS blob exists with retry logic."""
+    return blob.exists()
+
+@gcs_retry
+def gcs_download_blob(blob):
+    """Download GCS blob content with retry logic."""
+    return blob.download_as_bytes()
+
+@gcs_retry
+def gcs_upload_blob_from_string(blob, data, content_type=None):
+    """Upload data to GCS blob with retry logic."""
+    blob.upload_from_string(data, content_type=content_type)
+
+@gcs_retry
+def gcs_upload_blob_from_file(blob, file_obj, content_type=None):
+    """Upload file to GCS blob with retry logic."""
+    blob.upload_from_file(file_obj, content_type=content_type)
+
+@gcs_retry
+def gcs_delete_blob(blob):
+    """Delete GCS blob with retry logic."""
+    blob.delete()
+
 # --- LAZY INITIALIZED CLIENTS ---
-_db, _storage_client, _firebase_app, _redis_client = None, None, None, None
+_db, _storage_client, _firebase_app = None, None, None
 def get_db(): global _db; _db = _db or firestore.Client(); return _db
 def get_storage_client(): global _storage_client; _storage_client = _storage_client or storage.Client(); return _storage_client
-def get_redis_client():
-    global _redis_client
-    if _redis_client is None:
-        try: _redis_client = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True); _redis_client.ping()
-        except redis.exceptions.ConnectionError: _redis_client = None
-    return _redis_client
 # Remove the local initialize_firebase function since we're using the centralized one
 
 # --- HELPER FUNCTIONS ---
@@ -78,11 +150,11 @@ def process_avatar_image(gcs_path, user_id):
     source_blob = bucket.blob(gcs_path)
 
     try:
-        if not source_blob.exists():
+        if not gcs_blob_exists(source_blob):
             logging.error(f"Original avatar not found at {gcs_path} for user {user_id}")
             return
 
-        image_bytes = source_blob.download_as_bytes()
+        image_bytes = gcs_download_blob(source_blob)
         
         with Image.open(BytesIO(image_bytes)) as img:
             if img.mode in ('RGBA', 'LA'):
@@ -98,7 +170,7 @@ def process_avatar_image(gcs_path, user_id):
         processed_blob_name = f"avatars_processed/{user_id}.webp"
         dest_blob = bucket.blob(processed_blob_name)
         
-        dest_blob.upload_from_file(output_buffer, content_type='image/webp')
+        gcs_upload_blob_from_file(dest_blob, output_buffer, content_type='image/webp')
         
         user_ref = db.collection('users').document(user_id)
         user_ref.update({'avatarUrl': dest_blob.public_url})
@@ -106,7 +178,7 @@ def process_avatar_image(gcs_path, user_id):
         invalidate_user_summary_cache(user_id) # <-- Invalidate cache on success
         
         logging.info(f"Successfully updated avatar for user: {user_id}")
-        source_blob.delete()
+        gcs_delete_blob(source_blob)
     except Exception as e:
         logging.error(f"Failed to process avatar for user {user_id}: {e}", exc_info=True)
 
@@ -119,6 +191,11 @@ def award_bonus_points(user_id, amount, reason):
         sync_user_to_algolia_task.delay(user_id)
         user_ref.update({'totalPoints': firestore.Increment(amount)})
         invalidate_user_summary_cache(user_id) # <-- Invalidate cache on success
+        
+        # Update denormalized leaderboard counter
+        from api.leaderboard_counters import update_user_points_counter
+        update_user_points_counter(user_id, amount)
+        
         logging.info(f"Awarded {amount} bonus points to {user_id} for: {reason}")
     except Exception as e:
         logging.error(f"Failed to award bonus points to {user_id}: {e}")
@@ -130,7 +207,7 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
     user_doc = user_ref.get(transaction=transaction)
     if not user_doc.exists:
         transaction.update(upload_ref, {'status': 'COMPLETED', 'aiResult': ai_result_json_string})
-        return (None, False)
+        return (None, False, 0)
 
     user_data = user_doc.to_dict()
     current_points = user_data.get('totalPoints', 0)
@@ -224,7 +301,8 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
     # Invalidate cache after the transaction commits
     invalidate_user_summary_cache(user_ref.id)
     
-    return (referrer_id, is_first_upload)
+    points_delta = new_score + bonus_points
+    return (referrer_id, is_first_upload, points_delta)
 
 def handle_team_challenge_progress(user_id, ai_result):
     db = get_db()
@@ -285,7 +363,9 @@ def handle_team_challenge_progress(user_id, ai_result):
 def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_id):
     logging.info(f"[{gcs_filename}] -> START for Upload ID: {upload_id}")
     initialize_firebase()  # Now uses the centralized initialization
-    db = get_db(); storage_client = get_storage_client(); redis_client = get_redis_client()
+    db = get_db(); storage_client = get_storage_client()
+    from dependencies import redis_client
+    redis_conn = redis_client()
     
     upload_ref = db.collection('uploads').document(upload_id)
     bucket = storage_client.bucket(bucket_name)
@@ -316,15 +396,15 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
 
         prompt = AI_ANALYSIS_PROMPT.replace('{active_challenges_placeholder}', json.dumps(active_challenges_prompt))
         
-        if not source_blob.exists(): raise FileNotFoundError(f"Blob '{gcs_filename}' not found.")
+        if not gcs_blob_exists(source_blob): raise FileNotFoundError(f"Blob '{gcs_filename}' not found.")
         # Download file content once and reuse it to avoid multiple downloads
-        file_content = source_blob.download_as_bytes()
+        file_content = gcs_download_blob(source_blob)
         with open(temp_local_path, 'wb') as f:
             f.write(file_content)
         
         analysis_result_str = None
-        if not redis_client: raise ConnectionError("Cannot connect to Redis for API key management.")
-        start_index = int(redis_client.get("current_analysis_gemini_key_index") or 0)
+        if not redis_conn: raise ConnectionError("Cannot connect to Redis for API key management.")
+        start_index = int(redis_conn.get("current_analysis_gemini_key_index") or 0)
         
         
 
@@ -333,13 +413,13 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
             api_key = ACTIVE_GEMINI_KEYS[current_index]
             try:
                 logging.info(f"--> Trying Gemini API Key #{current_index + 1}")
-                client_instance = genai.Client(api_key=api_key)
+                client_instance = genai.Client(api_key=api_key, timeout=GEMINI_TIMEOUT)
                 
                 logging.info(f"Uploading file '{temp_local_path}' to Gemini File API...")
-                gemini_file_resource = client_instance.files.upload(file=temp_local_path)
+                gemini_file_resource = client_instance.files.upload(file=temp_local_path, timeout=GEMINI_TIMEOUT)
                 
                 while gemini_file_resource.state.name == "PROCESSING":
-                    time.sleep(10); gemini_file_resource = client_instance.files.get(name=gemini_file_resource.name)
+                    time.sleep(10); gemini_file_resource = client_instance.files.get(name=gemini_file_resource.name, timeout=GEMINI_TIMEOUT)
                 
                 if gemini_file_resource.state.name == "FAILED": raise Exception("Gemini File API processing failed.")
                 
@@ -350,10 +430,11 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
                     config=types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=32768)
                     ),
+                    timeout=GEMINI_TIMEOUT
                 )
                 analysis_result_str = response.text
                 
-                redis_client.set("current_analysis_gemini_key_index", current_index)
+                redis_conn.set("current_analysis_gemini_key_index", current_index)
                 logging.info(f"Gemini API Key #{current_index + 1} succeeded. Setting as active key.")
                 break 
             except Exception as e:
@@ -487,8 +568,14 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         else:
             today_wib_date = datetime.datetime.now(WIB_TZ).date()
             transaction = db.transaction()
-            referrer_id, is_first_upload = update_stats_and_upload_transaction(transaction, user_ref, upload_ref, cleaned_json_string, active_challenges_full, today_wib_date)
+            referrer_id, is_first_upload, points_delta = update_stats_and_upload_transaction(transaction, user_ref, upload_ref, cleaned_json_string, active_challenges_full, today_wib_date)
             sync_user_to_algolia(user_id)
+            
+            # Update denormalized leaderboard counter
+            if points_delta != 0:
+                from api.leaderboard_counters import update_user_points_counter
+                update_user_points_counter(user_id, points_delta)
+            
             if referrer_id and is_first_upload:
                 award_bonus_points.delay(referrer_id, 50, "Successful Referral")
             
@@ -499,8 +586,8 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         
         destination_blob = bucket.blob(f"processed/{gcs_filename}")
         # Use the already downloaded file content instead of downloading again
-        destination_blob.upload_from_string(file_content, content_type=source_blob.content_type)
-        source_blob.delete()
+        gcs_upload_blob_from_string(destination_blob, file_content, content_type=source_blob.content_type)
+        gcs_delete_blob(source_blob)
         logging.info(f"[{gcs_filename}] -> SUCCESS.")
     except Exception as e:
         logging.error(f"Task failed for {upload_id}: {e}", exc_info=True)

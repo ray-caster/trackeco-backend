@@ -17,7 +17,7 @@ initialize_firebase()
 
 # --- Google Cloud Clients ---
 db = firestore.Client()
-storage_client = storage.Client()
+storage_client = storage.Client(timeout=10)  # 10 second timeout for GCS operations
 tasks_client = tasks_v2.CloudTasksClient()
 
 # --- Environment variables ---
@@ -43,50 +43,61 @@ JWT_SECRET_KEYS = [key for key in JWT_SECRET_KEYS if key]
 if not JWT_SECRET_KEYS and os.environ.get("JWT_SECRET_KEY"):
     JWT_SECRET_KEYS = [os.environ.get("JWT_SECRET_KEY")]
 
-# --- Redis Connection Pool with Retry Logic ---
+# --- Redis Connection Pool with Retry Logic and Connection Pooling ---
 import threading
+import time
 from redis.retry import Retry
 from redis.backoff import ExponentialBackoff
+from redis.lock import Lock
 
-# Thread-local storage for Redis connections
-_redis_local = threading.local()
+# Global connection pool shared across all threads
+_redis_connection_pool = None
+_redis_pool_lock = threading.Lock()
 
 def get_redis_connection():
     """
-    Get a thread-safe Redis connection from the pool with retry logic.
-    Returns a new connection for each thread to ensure thread safety.
+    Get a Redis connection from the shared connection pool.
+    Uses a global connection pool with proper locking for thread safety.
     """
-    if not hasattr(_redis_local, 'connection'):
-        try:
-            # Create connection pool with retry configuration
-            retry = Retry(ExponentialBackoff(), retries=3)
-            connection_pool = redis.ConnectionPool.from_url(
-                os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
-                decode_responses=True,
-                retry=retry,
-                max_connections=20,
-                health_check_interval=30,
-                socket_connect_timeout=5,
-                socket_timeout=10
-            )
-            
-            # Create client with connection pool
-            _redis_local.connection = redis.Redis(connection_pool=connection_pool)
-            _redis_local.connection.ping()  # Test connection
-            logging.info("Redis connection pool initialized successfully")
-            
-        except redis.exceptions.ConnectionError as e:
-            logging.error(f"Failed to connect to Redis: {e}")
-            _redis_local.connection = None
-        except Exception as e:
-            logging.error(f"Unexpected error initializing Redis: {e}")
-            _redis_local.connection = None
+    global _redis_connection_pool
     
-    return _redis_local.connection
+    if _redis_connection_pool is None:
+        with _redis_pool_lock:
+            if _redis_connection_pool is None:  # Double-check locking
+                try:
+                    # Create connection pool with retry configuration
+                    retry = Retry(ExponentialBackoff(), retries=3)
+                    _redis_connection_pool = redis.ConnectionPool.from_url(
+                        os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
+                        decode_responses=True,
+                        retry=retry,
+                        max_connections=50,  # Increased for better concurrency
+                        health_check_interval=30,
+                        socket_connect_timeout=5,
+                        socket_timeout=10,
+                        socket_keepalive=True
+                    )
+                    logging.info("Redis connection pool initialized successfully")
+                    
+                except Exception as e:
+                    logging.error(f"Failed to initialize Redis connection pool: {e}")
+                    return None
+    
+    try:
+        # Create a new Redis client using the shared connection pool
+        client = redis.Redis(connection_pool=_redis_connection_pool)
+        client.ping()  # Test connection
+        return client
+    except redis.exceptions.ConnectionError as e:
+        logging.error(f"Failed to get Redis connection from pool: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error getting Redis connection: {e}")
+        return None
 
-# Global redis_client for backward compatibility (thread-safe via get_redis_connection)
+# Global redis_client for backward compatibility
 def redis_client():
-    """Thread-safe access to Redis client."""
+    """Thread-safe access to Redis client using connection pooling."""
     return get_redis_connection()
 
 # Initialize connection pool on module load

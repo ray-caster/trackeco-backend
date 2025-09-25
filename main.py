@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from google.cloud import firestore
 from logging_config import setup_logging
 from celery_worker import celery_app
-from extensions import limiter  # <-- IMPORT the new limiter instance
+from extensions import limiter, compress  # <-- IMPORT the new limiter instance
 
 # --- SETUP & CONFIG ---
 # Load environment variables for the Flask app process.
@@ -26,6 +26,24 @@ app = Flask(__name__)
 # Set the Redis URL for the rate limiter from your environment variables.
 limiter.storage_uri = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 limiter.init_app(app) # Initialize the limiter with the Flask app.
+
+# Configure and initialize Gzip compression
+app.config['COMPRESS_ALGORITHM'] = 'gzip'
+app.config['COMPRESS_LEVEL'] = 6  # Balanced compression level
+app.config['COMPRESS_MIN_SIZE'] = 500  # Minimum size to compress (bytes)
+app.config['COMPRESS_MIME_TYPES'] = [
+    'text/html',
+    'text/css',
+    'text/xml',
+    'text/plain',
+    'text/javascript',
+    'application/json',
+    'application/javascript',
+    'application/xml',
+    'application/xhtml+xml',
+    'application/octet-stream'
+]
+compress.init_app(app)
 
 celery_app.conf.update(app.config)
 

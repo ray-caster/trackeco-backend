@@ -7,6 +7,7 @@ from dependencies import db
 from .auth import token_required
 from .users import get_user_profiles_from_ids
 from .notifications import send_notification
+from .pagination_utils import validate_pagination_params, paginate_list, create_pagination_response
 social_bp = Blueprint('social_bp', __name__)
 
 # --- Transactional Helper ---
@@ -184,26 +185,52 @@ def health_check():
 @token_required
 def get_all_friend_data(user_id):
     """
-    A single, efficient endpoint to get all friend-related data for the current user.
+    A single, efficient endpoint to get all friend-related data for the current user with pagination support.
     """
-    user_ref = db.collection('users').document(user_id)
-    user_doc = user_ref.get()
+    try:
+        # Get pagination parameters for each section
+        friends_limit = request.args.get('friends_limit', type=int)
+        friends_cursor = request.args.get('friends_cursor')
+        sent_limit = request.args.get('sent_limit', type=int)
+        sent_cursor = request.args.get('sent_cursor')
+        received_limit = request.args.get('received_limit', type=int)
+        received_cursor = request.args.get('received_cursor')
 
-    if not user_doc.exists:
-        return jsonify({"error": "User not found"}), 404
+        # Validate pagination parameters
+        friends_limit, friends_cursor = validate_pagination_params(friends_limit, friends_cursor)
+        sent_limit, sent_cursor = validate_pagination_params(sent_limit, sent_cursor)
+        received_limit, received_cursor = validate_pagination_params(received_limit, received_cursor)
 
-    user_data = user_doc.to_dict()
-    
-    friend_ids = user_data.get('friends', [])
-    sent_request_ids = user_data.get('friendRequestsSent', [])
-    received_request_ids = user_data.get('friendRequestsReceived', [])
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
 
-    friends = [p.model_dump() for p in get_user_profiles_from_ids(friend_ids, user_id)]
-    sent_requests = [p.model_dump() for p in get_user_profiles_from_ids(sent_request_ids, user_id)]
-    received_requests = [p.model_dump() for p in get_user_profiles_from_ids(received_request_ids, user_id)]
+        if not user_doc.exists:
+            return jsonify({"error": "User not found"}), 404
 
-    return jsonify({
-        "friends": friends,
-        "sentRequests": sent_requests,
-        "receivedRequests": received_requests
-    }), 200
+        user_data = user_doc.to_dict()
+        
+        friend_ids = user_data.get('friends', [])
+        sent_request_ids = user_data.get('friendRequestsSent', [])
+        received_request_ids = user_data.get('friendRequestsReceived', [])
+
+        # Get profiles for each section
+        friends_profiles = [p.model_dump() for p in get_user_profiles_from_ids(friend_ids, user_id)]
+        sent_profiles = [p.model_dump() for p in get_user_profiles_from_ids(sent_request_ids, user_id)]
+        received_profiles = [p.model_dump() for p in get_user_profiles_from_ids(received_request_ids, user_id)]
+
+        # Apply pagination to each section
+        friends_page, friends_next_cursor, friends_has_more = paginate_list(friends_profiles, friends_limit, friends_cursor)
+        sent_page, sent_next_cursor, sent_has_more = paginate_list(sent_profiles, sent_limit, sent_cursor)
+        received_page, received_next_cursor, received_has_more = paginate_list(received_profiles, received_limit, received_cursor)
+
+        response = {
+            "friends": create_pagination_response(friends_page, friends_next_cursor, friends_has_more, len(friends_profiles)),
+            "sentRequests": create_pagination_response(sent_page, sent_next_cursor, sent_has_more, len(sent_profiles)),
+            "receivedRequests": create_pagination_response(received_page, received_next_cursor, received_has_more, len(received_profiles))
+        }
+
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logging.error(f"Error fetching friend data for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Could not load friend data"}), 500
