@@ -175,14 +175,32 @@ def limit(rate_string: str) -> Callable:
     Example: @limit("10 per minute")
     """
     def parse_rate_string(rate_str: str) -> Tuple[int, int]:
-        """Parse rate string like '10 per minute'"""
+        """Parse rate string like '10 per minute' or '1 per 2 minutes'"""
         parts = rate_str.split()
-        if len(parts) != 3 or parts[1].lower() != 'per':
-            raise ValueError(f"Invalid rate string format: {rate_str}")
         
+        # Find the 'per' keyword to separate requests from time part
+        try:
+            per_index = parts.index('per')
+        except ValueError:
+            per_index = parts.index('Per')  # Handle case sensitivity
+        except ValueError:
+            raise ValueError(f"Invalid rate string format: {rate_str}. Missing 'per' keyword.")
+        
+        if per_index != 1:
+            raise ValueError(f"Invalid rate string format: {rate_str}. Expected format: 'X per Y unit'.")
+        
+        # Extract requests part (before 'per')
         requests = int(parts[0])
-        unit = parts[2].lower()
         
+        # Extract time part (after 'per')
+        time_parts = parts[per_index + 1:]
+        if not time_parts:
+            raise ValueError(f"Invalid rate string format: {rate_str}. Missing time unit.")
+        
+        # Join time parts and parse
+        time_str = ' '.join(time_parts).lower()
+        
+        # Check if time part starts with a number
         time_units = {
             'second': 1,
             'minute': 60,
@@ -190,10 +208,28 @@ def limit(rate_string: str) -> Callable:
             'day': 86400
         }
         
-        if unit not in time_units:
-            raise ValueError(f"Unknown time unit: {unit}")
+        # Try to parse numeric prefix
+        time_words = time_str.split()
+        if len(time_words) == 2 and time_words[0].isdigit():
+            # Format like "2 minutes"
+            quantity = int(time_words[0])
+            unit = time_words[1]
+        elif len(time_words) == 1:
+            # Format like "minute" or "hour"
+            quantity = 1
+            unit = time_words[0]
+        else:
+            raise ValueError(f"Invalid time unit format: {time_str}")
         
-        return requests, time_units[unit]
+        if unit not in time_units:
+            # Handle plural forms
+            if unit.endswith('s') and unit[:-1] in time_units:
+                unit = unit[:-1]
+            else:
+                raise ValueError(f"Unknown time unit: {unit}")
+        
+        window_seconds = quantity * time_units[unit]
+        return requests, window_seconds
     
     requests, window_seconds = parse_rate_string(rate_string)
     
