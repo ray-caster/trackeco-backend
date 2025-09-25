@@ -4,6 +4,7 @@ This module provides centralized access to shared resources and services
 to avoid circular imports and enable proper dependency injection.
 """
 
+import logging
 import os
 from google.cloud import firestore, storage, tasks_v2
 import redis
