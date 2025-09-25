@@ -17,7 +17,7 @@ initialize_firebase()
 
 # --- Google Cloud Clients ---
 db = firestore.Client()
-storage_client = storage.Client(timeout=10)  # 10 second timeout for GCS operations
+storage_client = storage.Client()  # Remove timeout parameter for compatibility with google-cloud-storage 3.3.1
 tasks_client = tasks_v2.CloudTasksClient()
 
 # --- Environment variables ---
