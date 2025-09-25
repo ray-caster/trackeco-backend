@@ -5,6 +5,7 @@ import logging
 from flask import Flask, jsonify
 from dotenv import load_dotenv
 import firebase_admin
+from firebase_init import initialize_firebase
 from pydantic import ValidationError
 from google.cloud import firestore
 from logging_config import setup_logging
@@ -16,10 +17,8 @@ from extensions import limiter  # <-- IMPORT the new limiter instance
 load_dotenv()
 setup_logging()
 
-# Initialize Firebase for the Gunicorn/Flask processes.
-# The `if not firebase_admin._apps:` check prevents re-initialization.
-if not firebase_admin._apps:
-    firebase_admin.initialize_app()
+# Initialize Firebase using centralized initialization
+initialize_firebase()
 
 app = Flask(__name__)
 

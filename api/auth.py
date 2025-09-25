@@ -15,7 +15,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 from .email_utils import send_verification_email
 from .pydantic_models import AuthRequest, VerifyRequest, GoogleAuthRequest, ResendCodeRequest
-from .config import db, JWT_SECRET_KEY, ANDROID_CLIENT_ID
+from .config import db, JWT_SECRET_KEYS, ANDROID_CLIENT_ID
+from .sanitization import sanitize_email, sanitize_string, sanitize_username
 from extensions import limiter # <-- IMPORT the limiter instance
 from tasks import sync_user_to_algolia_task
 auth_bp = Blueprint('auth_bp', __name__)
@@ -44,7 +45,19 @@ def token_required(f):
         if not auth_header or not auth_header.startswith('Bearer '): return jsonify({"error_code": "TOKEN_MISSING"}), 401
         token = auth_header.split(' ')[1]
         try:
-            data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"]); kwargs['user_id'] = data['user_id']
+            # Try all available JWT secret keys for token verification (key rotation support)
+            decoded_data = None
+            for secret_key in JWT_SECRET_KEYS:
+                try:
+                    decoded_data = jwt.decode(token, secret_key, algorithms=["HS256"])
+                    break
+                except jwt.InvalidTokenError:
+                    continue
+            
+            if not decoded_data:
+                return jsonify({"error_code": "TOKEN_INVALID"}), 401
+                
+            kwargs['user_id'] = decoded_data['user_id']
         except (jwt.ExpiredSignatureError, jwt.InvalidTokenError): return jsonify({"error_code": "TOKEN_INVALID"}), 401
         return f(*args, **kwargs)
     return decorated
@@ -54,24 +67,35 @@ def token_required(f):
 @limiter.limit("5 per hour") # <-- ADDED RATE LIMIT
 def signup():
     req_data = AuthRequest.model_validate(request.get_json())
-    if db.collection('email_mappings').document(req_data.email).get().exists: return jsonify({"error_code": "USER_EXISTS"}), 409
     
-    hashed_password = generate_password_hash(req_data.password)
+    # Sanitize inputs
+    sanitized_email = sanitize_email(req_data.email)
+    sanitized_password = sanitize_string(req_data.password)
+    
+    if db.collection('email_mappings').document(sanitized_email).get().exists:
+        return jsonify({"error_code": "USER_EXISTS"}), 409
+    
+    hashed_password = generate_password_hash(sanitized_password)
     verification_code = str(random.randint(100000, 999999))
     
-    db.collection('verification_attempts').document(req_data.email).set({
+    db.collection('verification_attempts').document(sanitized_email).set({
         'passwordHash': hashed_password, 'verificationCode': verification_code,
         'expiresAt': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=15)
     })
     
-    if send_verification_email(req_data.email, verification_code): return jsonify({"message": "Verification code sent."}), 200
+    if send_verification_email(sanitized_email, verification_code):
+        return jsonify({"message": "Verification code sent."}), 200
     return jsonify({"error_code": "EMAIL_FAILED"}), 500
 
 @auth_bp.route('/verify', methods=['POST'])
 def verify_email():
     req_data = VerifyRequest.model_validate(request.get_json())
     
-    attempt_ref = db.collection('verification_attempts').document(req_data.email)
+    # Sanitize inputs
+    sanitized_email = sanitize_email(req_data.email)
+    sanitized_code = sanitize_string(req_data.code, max_length=6)
+    
+    attempt_ref = db.collection('verification_attempts').document(sanitized_email)
     attempt_doc = attempt_ref.get()
     if not attempt_doc.exists: return jsonify({"error_code": "NOT_FOUND"}), 404
     
@@ -79,14 +103,15 @@ def verify_email():
     if datetime.datetime.now(datetime.timezone.utc) > attempt_data['expiresAt']:
         attempt_ref.delete(); return jsonify({"error_code": "EXPIRED_CODE"}), 400
     
-    if attempt_data['verificationCode'] != req_data.code: return jsonify({"error_code": "INVALID_CODE"}), 400
+    if attempt_data['verificationCode'] != sanitized_code:
+        return jsonify({"error_code": "INVALID_CODE"}), 400
     
     user_id = str(uuid.uuid4())
     referral_code = generate_unique_referral_code()
     
     user_data = {
         'userId': user_id, 
-        'email': req_data.email, 
+        'email': sanitized_email,
         'passwordHash': attempt_data['passwordHash'],
         'isVerified': True, 
         'createdAt': firestore.SERVER_TIMESTAMP,
@@ -108,20 +133,25 @@ def verify_email():
         'friendRequestsReceived': []
     }
     
-    create_user_and_mapping_transaction(db.transaction(), user_id, req_data.email, user_data, attempt_ref)
+    create_user_and_mapping_transaction(db.transaction(), user_id, sanitized_email, user_data, attempt_ref)
     sync_user_to_algolia_task.delay(user_id)
-    email_hash = hashlib.sha256(req_data.email.encode('utf-8')).hexdigest()
+    email_hash = hashlib.sha256(sanitized_email.encode('utf-8')).hexdigest()
     db.collection('email_hashes').document(email_hash).set({'userId': user_id})
     db.collection('referral_codes').document(referral_code).set({'userId': user_id})
     
-    token = jwt.encode({'user_id': user_id, 'email': req_data.email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEY)
+    # Use the first JWT secret key for encoding (current active key)
+    token = jwt.encode({'user_id': user_id, 'email': sanitized_email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEYS[0], algorithm="HS256")
     return jsonify({"token": token}), 200
 
 @auth_bp.route('/resend-code', methods=['POST'])
 @limiter.limit("1 per 2 minutes") # <-- ADDED RATE LIMIT
 def resend_code():
     req_data = ResendCodeRequest.model_validate(request.get_json())
-    attempt_ref = db.collection('verification_attempts').document(req_data.email)
+    
+    # Sanitize input
+    sanitized_email = sanitize_email(req_data.email)
+    
+    attempt_ref = db.collection('verification_attempts').document(sanitized_email)
     if not attempt_ref.get().exists: return jsonify({"error_code": "NOT_FOUND"}), 404
     
     new_code = str(random.randint(100000, 999999))
@@ -130,14 +160,20 @@ def resend_code():
         'expiresAt': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=15)
     })
     
-    if send_verification_email(req_data.email, new_code): return jsonify({"message": "A new verification code has been sent."}), 200
+    if send_verification_email(sanitized_email, new_code):
+        return jsonify({"message": "A new verification code has been sent."}), 200
     return jsonify({"error_code": "EMAIL_FAILED"}), 500
 
 @auth_bp.route('/login', methods=['POST'])
 @limiter.limit("10 per minute") # <-- ADDED RATE LIMIT
 def login():
     req_data = AuthRequest.model_validate(request.get_json())
-    email_ref = db.collection('email_mappings').document(req_data.email)
+    
+    # Sanitize inputs
+    sanitized_email = sanitize_email(req_data.email)
+    sanitized_password = sanitize_string(req_data.password)
+    
+    email_ref = db.collection('email_mappings').document(sanitized_email)
     mapping = email_ref.get()
     if not mapping.exists: return jsonify({"error_code": "UNAUTHORIZED"}), 401
     
@@ -146,14 +182,14 @@ def login():
     if not user_doc.exists: return jsonify({"error_code": "UNAUTHORIZED"}), 401
     
     user_data = user_doc.to_dict()
-    if not check_password_hash(user_data.get('passwordHash', ''), req_data.password):
+    if not check_password_hash(user_data.get('passwordHash', ''), sanitized_password):
         return jsonify({"error_code": "UNAUTHORIZED"}), 401
     if not user_data.get('isVerified'): return jsonify({"error_code": "NOT_VERIFIED"}), 403
     
     token = jwt.encode({
-        'user_id': user_data['userId'], 'email': user_data['email'],
+        'user_id': user_data['userId'], 'email': sanitized_email,
         'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)
-    }, JWT_SECRET_KEY, algorithm="HS256")
+    }, JWT_SECRET_KEYS[0], algorithm="HS256")
     return jsonify({"token": token}), 200
 
 @auth_bp.route('/auth/google', methods=['POST'])
@@ -161,7 +197,7 @@ def login():
 def auth_google():
     req_data = GoogleAuthRequest.model_validate(request.get_json())
     idinfo = id_token.verify_oauth2_token(req_data.id_token, google_auth_requests.Request(), ANDROID_CLIENT_ID)
-    user_email, google_id, display_name = idinfo['email'].lower(), idinfo['sub'], idinfo.get('name', '')
+    user_email, google_id, display_name = sanitize_email(idinfo['email'].lower()), idinfo['sub'], sanitize_string(idinfo.get('name', ''), 50)
     
     user_ref = db.collection('users').document(google_id)
     if not user_ref.get().exists:
@@ -197,7 +233,7 @@ def auth_google():
         email_hash = hashlib.sha256(user_email.encode('utf-8')).hexdigest()
         db.collection('email_hashes').document(email_hash).set({'userId': google_id})
         
-    app_token = jwt.encode({'user_id': google_id, 'email': user_email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEY)
+    app_token = jwt.encode({'user_id': google_id, 'email': user_email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEYS[0], algorithm="HS256")
     return jsonify({"token": app_token}), 200
 
 def health_check():

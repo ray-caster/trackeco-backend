@@ -11,6 +11,7 @@ from google import genai
 from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import messaging
+from firebase_init import initialize_firebase
 import pytz
 import redis
 from logging_config import setup_logging
@@ -42,9 +43,7 @@ def get_redis_client():
         try: _redis_client = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True); _redis_client.ping()
         except redis.exceptions.ConnectionError: _redis_client = None
     return _redis_client
-def initialize_firebase():
-    global _firebase_app
-    if not firebase_admin._apps: _firebase_app = firebase_admin.initialize_app(); logging.info("Firebase Admin SDK initialized for Celery worker process.")
+# Remove the local initialize_firebase function since we're using the centralized one
 
 # --- HELPER FUNCTIONS ---
 def send_fcm_data_notification(doc_snapshot):
@@ -166,24 +165,57 @@ def update_stats_and_upload_transaction(transaction, user_ref, upload_ref, ai_re
             else:
                 challenge_progress[challenge_id] = new_prog
     
-    if(new_score+bonus_points>0):
-        last_streak_timestamp, current_streak = user_data.get('lastStreakTimestamp'), user_data.get('currentStreak', 0)
-        if last_streak_timestamp:
-            last_streak_date_wib = last_streak_timestamp.astimezone(WIB_TZ).date()
-            if last_streak_date_wib != today_wib_date:
-                current_streak = current_streak + 1 if last_streak_date_wib == (today_wib_date - datetime.timedelta(days=1)) else 1
-        else: current_streak = 1
-        if current_streak > user_data.get('maxStreak', 0): user_update_data['maxStreak'] = current_streak
+    # Streak logic - update based on daily activity, not points earned
+    last_streak_timestamp = user_data.get('lastStreakTimestamp')
+    current_streak = user_data.get('currentStreak', 0)
+    max_streak = user_data.get('maxStreak', 0)
+    
+    logging.info(f"Streak analysis for user {user_ref.id}: current={current_streak}, max={max_streak}, last_timestamp={last_streak_timestamp}")
+    
+    if last_streak_timestamp:
+        last_streak_date_wib = last_streak_timestamp.astimezone(WIB_TZ).date()
+        logging.info(f"Last streak date: {last_streak_date_wib}, Today: {today_wib_date}")
+        
+        if last_streak_date_wib != today_wib_date:
+            # User has activity today but streak wasn't updated yet
+            if last_streak_date_wib == (today_wib_date - datetime.timedelta(days=1)):
+                # Consecutive day - increment streak
+                current_streak += 1
+                logging.info(f"Incrementing streak to {current_streak} - consecutive day")
+            else:
+                # Non-consecutive day - reset to 1
+                current_streak = 1
+                logging.info(f"Resetting streak to 1 - non-consecutive day")
+    else:
+        # First time activity - start streak
+        current_streak = 1
+        logging.info(f"Starting new streak: 1")
     
     is_first_upload = not user_data.get('hasCompletedFirstUpload', False)
     referrer_id = user_data.get('referredBy') if is_first_upload else None
     
+    # Always update streak timestamp for daily activity tracking
     user_update_data = {
-        'totalPoints': current_points + new_score + bonus_points, 'currentStreak': current_streak,
-        'lastStreakTimestamp': firestore.SERVER_TIMESTAMP, 'challengeProgress': challenge_progress
+        'totalPoints': current_points + new_score + bonus_points,
+        'currentStreak': current_streak,
+        'lastStreakTimestamp': firestore.SERVER_TIMESTAMP,
+        'challengeProgress': challenge_progress
     }
-    if is_first_upload: user_update_data['hasCompletedFirstUpload'] = True
-    if newly_completed_ids: user_update_data['completedChallengeIds'] = firestore.ArrayUnion(newly_completed_ids)
+    
+    # Update max streak if current is higher
+    if current_streak > max_streak:
+        user_update_data['maxStreak'] = current_streak
+        logging.info(f"New max streak achieved: {current_streak}")
+    
+    logging.info(f"User update data for {user_ref.id}: points={current_points + new_score + bonus_points}, streak={current_streak}")
+    
+    if is_first_upload:
+        user_update_data['hasCompletedFirstUpload'] = True
+        logging.info(f"First upload completed for user {user_ref.id}")
+    
+    if newly_completed_ids:
+        user_update_data['completedChallengeIds'] = firestore.ArrayUnion(newly_completed_ids)
+        logging.info(f"New challenges completed for user {user_ref.id}: {newly_completed_ids}")
     
     
     transaction.update(user_ref, user_update_data)
@@ -252,7 +284,7 @@ def handle_team_challenge_progress(user_id, ai_result):
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=300, acks_late=True)
 def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_id):
     logging.info(f"[{gcs_filename}] -> START for Upload ID: {upload_id}")
-    initialize_firebase()
+    initialize_firebase()  # Now uses the centralized initialization
     db = get_db(); storage_client = get_storage_client(); redis_client = get_redis_client()
     
     upload_ref = db.collection('uploads').document(upload_id)
@@ -285,7 +317,10 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         prompt = AI_ANALYSIS_PROMPT.replace('{active_challenges_placeholder}', json.dumps(active_challenges_prompt))
         
         if not source_blob.exists(): raise FileNotFoundError(f"Blob '{gcs_filename}' not found.")
-        source_blob.download_to_filename(temp_local_path)
+        # Download file content once and reuse it to avoid multiple downloads
+        file_content = source_blob.download_as_bytes()
+        with open(temp_local_path, 'wb') as f:
+            f.write(file_content)
         
         analysis_result_str = None
         if not redis_client: raise ConnectionError("Cannot connect to Redis for API key management.")
@@ -322,21 +357,118 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
                 logging.info(f"Gemini API Key #{current_index + 1} succeeded. Setting as active key.")
                 break 
             except Exception as e:
-                logging.warning(f"Gemini API Key #{current_index + 1} failed: {e}")
+                logging.warning(f"Gemini API Key #{current_index + 1} failed: {e}", exc_info=True)
                 if gemini_file_resource and client_instance:
                     try: client_instance.files.delete(name=gemini_file_resource.name)
-                    except Exception: pass
+                    except Exception as delete_error:
+                        logging.error(f"Failed to delete Gemini file resource: {delete_error}")
                 gemini_file_resource = None
-                if i == len(ACTIVE_GEMINI_KEYS) - 1: raise
+                if i == len(ACTIVE_GEMINI_KEYS) - 1:
+                    logging.error(f"All Gemini API keys failed for upload {upload_id}. Last error: {e}")
+                    raise
                 continue
         
         if not analysis_result_str: raise Exception("All Gemini API keys failed.")
-        cleaned_json_string = analysis_result_str.strip().removeprefix("```json").removesuffix("```").strip()
-        ai_result = json.loads(cleaned_json_string)
-        is_low_confidence = ai_result.get('baseScore', 0) <= 2 and ai_result.get('effortScore', 0) <= 2
+        # Log the raw Gemini response for debugging
+        logging.info(f"Raw Gemini response for upload {upload_id}: {analysis_result_str[:500]}...")
         
+        # Enhanced JSON parsing with fallback for both wrapped and raw JSON responses
+        cleaned_json_string = analysis_result_str.strip()
+        original_response = analysis_result_str  # Keep original for error reporting
         
+        # Try to extract JSON from various markdown block formats
+        json_extracted = False
+        if cleaned_json_string.startswith("```json") and cleaned_json_string.endswith("```"):
+            cleaned_json_string = cleaned_json_string.removeprefix("```json").removesuffix("```").strip()
+            logging.info(f"Extracted JSON from json-markdown block for upload {upload_id}")
+            json_extracted = True
+        elif cleaned_json_string.startswith("```") and cleaned_json_string.endswith("```"):
+            # Handle other markdown blocks (e.g., ``` without json specifier)
+            cleaned_json_string = cleaned_json_string.removeprefix("```").removesuffix("```").strip()
+            logging.info(f"Extracted JSON from generic markdown block for upload {upload_id}")
+            json_extracted = True
         
+        # Parse the JSON with comprehensive error handling and fallbacks
+        ai_result = None
+        parse_attempts = []
+        
+        # Attempt 1: Parse the cleaned string directly
+        try:
+            ai_result = json.loads(cleaned_json_string)
+            parse_attempts.append("Direct parse of cleaned string")
+            logging.info(f"JSON parsing successful for upload {upload_id} (attempt 1)")
+        except json.JSONDecodeError as e:
+            parse_attempts.append(f"Direct parse failed: {e}")
+        
+        # Attempt 2: Try to find JSON object using regex if direct parse failed
+        if ai_result is None:
+            try:
+                import re
+                # More robust regex pattern to find JSON objects
+                json_match = re.search(r'\{[\s\S]*\}', analysis_result_str)
+                if json_match:
+                    potential_json = json_match.group(0)
+                    ai_result = json.loads(potential_json)
+                    cleaned_json_string = potential_json
+                    parse_attempts.append("Regex extraction succeeded")
+                    logging.info(f"JSON parsing successful via regex fallback for upload {upload_id}")
+            except (json.JSONDecodeError, AttributeError) as e:
+                parse_attempts.append(f"Regex fallback failed: {e}")
+        
+        # Attempt 3: Try to fix common JSON formatting issues
+        if ai_result is None:
+            try:
+                # Handle cases where Gemini might return malformed JSON
+                fixed_json = cleaned_json_string
+                # Remove any non-JSON content before the first {
+                first_brace = fixed_json.find('{')
+                if first_brace > 0:
+                    fixed_json = fixed_json[first_brace:]
+                
+                # Remove any non-JSON content after the last }
+                last_brace = fixed_json.rfind('}')
+                if last_brace < len(fixed_json) - 1:
+                    fixed_json = fixed_json[:last_brace + 1]
+                
+                ai_result = json.loads(fixed_json)
+                cleaned_json_string = fixed_json
+                parse_attempts.append("Format fixing succeeded")
+                logging.info(f"JSON parsing successful via format fixing for upload {upload_id}")
+            except json.JSONDecodeError as e:
+                parse_attempts.append(f"Format fixing failed: {e}")
+        
+        if ai_result is None:
+            # All parsing attempts failed
+            error_msg = f"All JSON parsing attempts failed for upload {upload_id}. Attempts: {parse_attempts}. Raw response (first 500 chars): {original_response[:500]}"
+            logging.error(error_msg)
+            raise ValueError(f"Could not parse AI response as JSON: {error_msg}")
+        
+        # Log successful parsing with detailed info
+        logging.info(f"Successfully parsed JSON for upload {upload_id} via {parse_attempts[-1]}: {json.dumps({k: v for k, v in ai_result.items() if k not in ['challengeUpdates']})}")
+        
+        # Enhanced low-confidence detection with nuanced scoring logic
+        base_score = ai_result.get('baseScore', 0)
+        effort_score = ai_result.get('effortScore', 0)
+        creativity_score = ai_result.get('creativityScore', 0)
+        final_score = ai_result.get('finalScore', 0)
+        penalty_points = ai_result.get('penaltyPoints', 0)
+        
+        logging.info(f"Score analysis for upload {upload_id}: base={base_score}, effort={effort_score}, creativity={creativity_score}, final={final_score}, penalty={penalty_points}")
+        
+        # More sophisticated low-confidence detection
+        # Consider multiple factors: very low scores, high penalty points, or inconsistent scoring
+        score_sum = base_score + effort_score + creativity_score
+        is_low_confidence = (
+            (base_score <= 1 and effort_score <= 1 and creativity_score <= 1 and final_score <= 3) or  # Very low scores
+            (penalty_points >= 5 and final_score <= 2) or  # High penalties with low final score
+            (abs(score_sum - final_score) > 5) or  # Inconsistent scoring (sum vs final)
+            (final_score <= 2 and score_sum >= 10)  # Low final score but high component scores
+        )
+        
+        if is_low_confidence:
+            logging.warning(f"Low confidence detected for upload {upload_id}: "
+                           f"base={base_score}, effort={effort_score}, creativity={creativity_score}, "
+                           f"final={final_score}, penalty={penalty_points}, score_sum={score_sum}")
 
         if ai_result.get("error"):
             upload_ref.update({'status': 'COMPLETED', 'aiResult': cleaned_json_string})
@@ -366,20 +498,34 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
         if final_upload_doc.exists: send_fcm_data_notification(final_upload_doc)
         
         destination_blob = bucket.blob(f"processed/{gcs_filename}")
-        destination_blob.upload_from_string(source_blob.download_as_string(), content_type=source_blob.content_type)
+        # Use the already downloaded file content instead of downloading again
+        destination_blob.upload_from_string(file_content, content_type=source_blob.content_type)
         source_blob.delete()
         logging.info(f"[{gcs_filename}] -> SUCCESS.")
     except Exception as e:
         logging.error(f"Task failed for {upload_id}: {e}", exc_info=True)
-        upload_ref.update({'status': 'FAILED', 'errorMessage': str(e)})
+        # Enhanced error logging with more context
+        error_details = {
+            'upload_id': upload_id,
+            'user_id': user_id,
+            'gcs_filename': gcs_filename,
+            'error_type': type(e).__name__,
+            'error_message': str(e),
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        logging.error(f"Detailed error context: {json.dumps(error_details)}")
+        
+        upload_ref.update({'status': 'FAILED', 'errorMessage': str(e), 'errorDetails': error_details})
         failed_doc = upload_ref.get()
         if failed_doc.exists: send_fcm_data_notification(failed_doc)
         if source_blob.exists():
-            try: 
+            try:
                 failed_blob = bucket.blob(f"failed/{gcs_filename}")
                 failed_blob.upload_from_string(source_blob.download_as_string(), content_type=source_blob.content_type)
                 source_blob.delete()
-            except Exception as move_e: logging.error(f"Failed to move failed file: {move_e}")
+                logging.info(f"Moved failed file to failed/{gcs_filename}")
+            except Exception as move_e:
+                logging.error(f"Failed to move failed file: {move_e}", exc_info=True)
         raise self.retry(exc=e)
     finally:
         if gemini_file_resource and client_instance:

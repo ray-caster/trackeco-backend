@@ -7,6 +7,7 @@ import argparse
 from google.cloud import firestore
 from google import genai
 from google.oauth2 import service_account
+from firebase_init import initialize_firebase
 from dotenv import load_dotenv
 from api.prompts import CHALLENGE_GENERATION_PROMPT
 import pytz
@@ -17,11 +18,9 @@ try:
     setup_logging()
     load_dotenv()
 
-    SERVICE_ACCOUNT_FILE = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "/home/trackeco/app/firebase-admin-key.json")
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        raise FileNotFoundError(f"Service account key not found at path: {SERVICE_ACCOUNT_FILE}")
-    credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
-    db = firestore.Client(credentials=credentials)
+    # Use centralized Firebase initialization
+    initialize_firebase()
+    db = firestore.Client()
     logging.info("Successfully initialized Firestore client for challenge generator.")
 
     GEMINI_API_KEYS = [ os.environ.get(f"GEMINI_API_KEY_{i+1}") for i in range(4) ]
