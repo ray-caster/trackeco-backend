@@ -54,6 +54,8 @@ def update_settings(user_id):
         update_data['showDisplayNameInLeaderboard'] = req_data.showDisplayNameInLeaderboard
     if req_data.showAvatarInLeaderboard is not None:
         update_data['showAvatarInLeaderboard'] = req_data.showAvatarInLeaderboard
+    if req_data.language is not None:
+        update_data['language'] = req_data.language
 
     if not update_data:
         return jsonify({"message": "No settings to update"}), 200
@@ -198,7 +200,8 @@ def get_my_profile(user_id):
         socialRemindersEnabled=user_data.get("socialRemindersEnabled", True),
         analysisRemindersEnabled=user_data.get("analysisRemindersEnabled", True),
         showDisplayNameInLeaderboard=user_data.get("showDisplayNameInLeaderboard", True),
-        showAvatarInLeaderboard=user_data.get("showAvatarInLeaderboard", True)
+        showAvatarInLeaderboard=user_data.get("showAvatarInLeaderboard", True),
+        language=user_data.get("language")
     )
     
     return profile.model_dump(), 200

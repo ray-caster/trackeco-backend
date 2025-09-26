@@ -134,6 +134,7 @@ class ProfileResponse(BaseModel):
     analysisRemindersEnabled: bool = True
     showDisplayNameInLeaderboard: bool = True
     showAvatarInLeaderboard: bool = True
+    language: Optional[str] = None
 
 class UpdateSettingsRequest(BaseModel):
     streakRemindersEnabled: Optional[bool] = None
@@ -141,3 +142,4 @@ class UpdateSettingsRequest(BaseModel):
     analysisRemindersEnabled: Optional[bool] = None
     showDisplayNameInLeaderboard: Optional[bool] = None
     showAvatarInLeaderboard: Optional[bool] = None
+    language: Optional[str] = None
