@@ -236,6 +236,55 @@ def auth_google():
     app_token = jwt.encode({'user_id': google_id, 'email': user_email, 'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)}, JWT_SECRET_KEYS[0], algorithm="HS256")
     return jsonify({"token": app_token}), 200
 
+@auth_bp.route('/refresh', methods=['POST'])
+@auth_rate_limit
+def refresh_token():
+    """Refresh an expired JWT token."""
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({"error_code": "TOKEN_MISSING"}), 401
+    
+    token = auth_header.split(' ')[1]
+    
+    try:
+        # Try to decode the token even if expired to get user info
+        decoded_data = None
+        for secret_key in JWT_SECRET_KEYS:
+            try:
+                # Use options to ignore expiration for refresh
+                decoded_data = jwt.decode(token, secret_key, algorithms=["HS256"], options={"verify_exp": False})
+                break
+            except jwt.InvalidTokenError:
+                continue
+        
+        if not decoded_data:
+            return jsonify({"error_code": "TOKEN_INVALID"}), 401
+        
+        user_id = decoded_data['user_id']
+        email = decoded_data['email']
+        
+        # Verify user still exists and is valid
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+        if not user_doc.exists:
+            return jsonify({"error_code": "USER_NOT_FOUND"}), 404
+        
+        user_data = user_doc.to_dict()
+        if not user_data.get('isVerified', False):
+            return jsonify({"error_code": "NOT_VERIFIED"}), 403
+        
+        # Issue new token with fresh expiration
+        new_token = jwt.encode({
+            'user_id': user_id,
+            'email': email,
+            'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)
+        }, JWT_SECRET_KEYS[0], algorithm="HS256")
+        
+        return jsonify({"token": new_token}), 200
+        
+    except jwt.InvalidTokenError:
+        return jsonify({"error_code": "TOKEN_INVALID"}), 401
+
 def health_check():
     """Performs a non-destructive health check for the auth module."""
     try:
