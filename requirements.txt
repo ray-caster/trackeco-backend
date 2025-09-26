@@ -35,3 +35,6 @@ sib-api-v3-sdk
 
 # Retry logic with exponential backoff
 tenacity
+
+# ASGI/WSGI compatibility
+asgiref
