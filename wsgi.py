@@ -23,11 +23,20 @@ class DebuggingWsgiToAsgi(WsgiToAsgi):
         logger.debug(f"Received scope: {scope}")
         log_scope_info(scope)
         
-        # Check if this is a non-HTTP request
-        if scope.get('type') != 'http':
-            logger.error(f"Non-HTTP request received: {scope['type']}")
-            raise ValueError(f"WSGI wrapper received a non-HTTP-request message: {scope['type']}")
+        # Handle lifespan events for ASGI servers
+        if scope['type'] == 'lifespan':
+            while True:
+                message = await receive()
+                if message['type'] == 'lifespan.startup':
+                    logger.debug("Handling lifespan startup event")
+                    await send({'type': 'lifespan.startup.complete'})
+                elif message['type'] == 'lifespan.shutdown':
+                    logger.debug("Handling lifespan shutdown event")
+                    await send({'type': 'lifespan.shutdown.complete'})
+                    break
+            return
         
+        # For HTTP requests, use the parent implementation
         return await super().__call__(scope, receive, send)
 
 application = DebuggingWsgiToAsgi(app)

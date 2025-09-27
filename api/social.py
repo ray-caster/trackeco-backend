@@ -234,3 +234,133 @@ def get_all_friend_data(user_id):
     except Exception as e:
         logging.error(f"Error fetching friend data for user {user_id}: {e}", exc_info=True)
         return jsonify({"error": "Could not load friend data"}), 500
+
+# --- SOCIAL SHARING ENDPOINTS ---
+
+@social_bp.route('/generate-referral-link', methods=['POST'])
+@token_required
+def generate_referral_link(user_id):
+    """Generates a unique referral link for the authenticated user."""
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+        
+        if not user_doc.exists:
+            return jsonify({"error": "User not found"}), 404
+            
+        user_data = user_doc.to_dict()
+        
+        # Check if user already has a referral code
+        referral_code = user_data.get('referralCode')
+        
+        if not referral_code:
+            # Generate a new referral code (using user ID + timestamp hash)
+            import hashlib
+            import time
+            timestamp = str(int(time.time()))
+            referral_code = hashlib.sha256(f"{user_id}{timestamp}".encode()).hexdigest()[:12]
+            
+            # Update user document with referral code
+            user_ref.update({'referralCode': referral_code})
+        
+        # Construct the referral link
+        referral_link = f"https://trackeco.app/invite/{referral_code}"
+        
+        return jsonify({
+            "referralCode": referral_code,
+            "referralLink": referral_link
+        }), 200
+        
+    except Exception as e:
+        logging.error(f"Error generating referral link for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Could not generate referral link"}), 500
+
+@social_bp.route('/track-share', methods=['POST'])
+@token_required
+def track_share(user_id):
+    """Records a share event (platform, content type, timestamp)."""
+    try:
+        from .pydantic_models import TrackShareRequest
+        req_data = TrackShareRequest.model_validate(request.get_json())
+        
+        # Create share event document
+        share_data = {
+            'userId': user_id,
+            'platform': req_data.platform,
+            'contentType': req_data.contentType,
+            'timestamp': req_data.timestamp or firestore.SERVER_TIMESTAMP,
+            'createdAt': firestore.SERVER_TIMESTAMP
+        }
+        
+        # Add to share_events collection
+        share_ref = db.collection('share_events').document()
+        share_ref.set(share_data)
+        
+        # Update user's share statistics
+        user_ref = db.collection('users').document(user_id)
+        
+        # Use transaction to ensure atomic updates
+        @firestore.transactional
+        def update_share_stats(transaction, user_ref, platform, content_type):
+            user_doc = user_ref.get(transaction=transaction)
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                
+                # Initialize share statistics if they don't exist
+                share_stats = user_data.get('shareStats', {})
+                platform_stats = share_stats.get(platform, {})
+                content_stats = share_stats.get('contentTypes', {})
+                
+                # Update platform count
+                platform_stats['count'] = platform_stats.get('count', 0) + 1
+                platform_stats['lastShared'] = firestore.SERVER_TIMESTAMP
+                
+                # Update content type count
+                content_stats[content_type] = content_stats.get(content_type, 0) + 1
+                
+                # Update share statistics
+                share_stats[platform] = platform_stats
+                share_stats['contentTypes'] = content_stats
+                share_stats['totalShares'] = share_stats.get('totalShares', 0) + 1
+                
+                transaction.update(user_ref, {'shareStats': share_stats})
+        
+        update_share_stats(db.transaction(), user_ref, req_data.platform, req_data.contentType)
+        
+        return jsonify({"message": "Share tracked successfully"}), 200
+        
+    except Exception as e:
+        logging.error(f"Error tracking share for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Could not track share"}), 500
+
+@social_bp.route('/share-stats', methods=['GET'])
+@token_required
+def get_share_stats(user_id):
+    """Retrieves share statistics for the user."""
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+        
+        if not user_doc.exists:
+            return jsonify({"error": "User not found"}), 404
+            
+        user_data = user_doc.to_dict()
+        share_stats = user_data.get('shareStats', {})
+        
+        # Format response
+        response = {
+            'totalShares': share_stats.get('totalShares', 0),
+            'sharesByPlatform': {},
+            'sharesByContentType': share_stats.get('contentTypes', {})
+        }
+        
+        # Add platform-specific stats (excluding internal fields)
+        for platform, stats in share_stats.items():
+            if platform not in ['contentTypes', 'totalShares'] and isinstance(stats, dict):
+                response['sharesByPlatform'][platform] = stats.get('count', 0)
+        
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logging.error(f"Error fetching share stats for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Could not fetch share statistics"}), 500

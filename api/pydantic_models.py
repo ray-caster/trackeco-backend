@@ -68,6 +68,17 @@ class FriendResponseRequest(BaseModel):
 class ContactHashesRequest(BaseModel):
     hashes: List[str]
 
+# --- SOCIAL SHARING ---
+class TrackShareRequest(BaseModel):
+    platform: str
+    contentType: str
+    timestamp: Optional[str] = None  # Optional, can be generated server-side
+
+class ShareStatsResponse(BaseModel):
+    totalShares: int
+    sharesByPlatform: dict
+    sharesByContentType: dict
+
 # --- GAMIFICATION ---
 class TeamUpRequest(BaseModel):
     challengeId: str
