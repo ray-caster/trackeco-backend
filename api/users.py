@@ -143,6 +143,22 @@ def avatar_upload_complete(user_id):
     process_avatar_image.delay(gcs_path, user_id)
     
     return jsonify({"message": "Avatar processing queued"}), 202
+@users_bp.route('/update-fcm-token', methods=['POST'])
+@token_required
+def update_fcm_token(user_id):
+    try:
+        req_data = request.get_json()
+        fcm_token = req_data.get('fcmToken')
+        if not fcm_token:
+            return jsonify({"error": "fcmToken is required"}), 400
+        
+        user_ref = db.collection('users').document(user_id)
+        user_ref.update({'fcmToken': fcm_token})
+        
+        return jsonify({"message": "FCM token updated successfully"}), 200
+    except Exception as e:
+        logging.error(f"Failed to update FCM token for user {user_id}: {e}")
+        return jsonify({"error": "Could not update FCM token"}), 500
 
 
 @users_bp.route('/me', methods=['GET'])
