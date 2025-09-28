@@ -158,9 +158,9 @@ def get_challenges():
     cache_key = "challenges_cache"
     redis_conn = redis_client()
     if redis_conn:
-        cached_challenges = redis_conn.get(cache_key)
-        if cached_challenges:
-            return jsonify(json.loads(cached_challenges)), 200
+        cached_response = redis_conn.get(cache_key)
+        if cached_response:
+            return jsonify(json.loads(cached_response)), 200
             
     query = db.collection('challenges').where(filter=firestore.FieldFilter('isActive', '==', True))
     active_challenges = [doc.to_dict() for doc in query.stream()]
@@ -168,10 +168,33 @@ def get_challenges():
     if not active_challenges:
         return jsonify({"error": "No active challenges found"}), 404
         
-    if redis_conn:
-        redis_conn.set(cache_key, json.dumps(active_challenges, default=str), ex=3600) # Cache for 1 hour
+    # Transform challenges to match Android expected field names
+    transformed_challenges = []
+    for challenge in active_challenges:
+        transformed_challenge = {
+            "challengeId": challenge.get("challengeId", ""),
+            "description": challenge.get("description", ""),
+            "bonusPoints": challenge.get("bonusPoints", 0),
+            "isActive": challenge.get("isActive", False),
+            "type": challenge.get("type", ""),
+            "expiresAt": challenge.get("expiresAt", ""),
+            "progressGoal": challenge.get("progressGoal"),
+            "isTeamUpEligible": challenge.get("isTeamUpEligible", False)
+        }
+        # Remove None values to avoid serialization issues
+        transformed_challenge = {k: v for k, v in transformed_challenge.items() if v is not None}
+        transformed_challenges.append(transformed_challenge)
+    
+    # Wrap in Android-expected structure
+    response_data = {
+        "data": transformed_challenges,
+        "pagination": None  # Android expects this field even if null
+    }
         
-    return jsonify(active_challenges), 200
+    if redis_conn:
+        redis_conn.set(cache_key, json.dumps(response_data, default=str), ex=3600) # Cache for 1 hour
+        
+    return jsonify(response_data), 200
 
 
 @gamification_bp.route('/challenges/team-up', methods=['POST'])
