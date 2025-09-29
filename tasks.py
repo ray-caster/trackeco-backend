@@ -333,17 +333,17 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
             api_key = ACTIVE_GEMINI_KEYS[current_index]
             try:
                 logging.info(f"--> Trying Gemini API Key #{current_index + 1}")
-                logging.info(f"API Key: {api_key}")
                 client_instance = genai.Client(api_key=api_key)
-                logging.info("Client initialized successfully")
                 
                 logging.info(f"Uploading file '{temp_local_path}' to Gemini File API...")
                 gemini_file_resource = client_instance.files.upload(file=temp_local_path)
                 
                 while gemini_file_resource.state.name == "PROCESSING":
                     time.sleep(10); gemini_file_resource = client_instance.files.get(name=gemini_file_resource.name)
-                
-                if gemini_file_resource.state.name == "FAILED": raise Exception("Gemini File API processing failed.")
+
+                if gemini_file_resource.state.name == "FAILED":
+                    logging.error(f"Gemini file resource details: {gemini_file_resource}")
+                    raise Exception("Gemini File API processing failed.")
                 
                 logging.info("File processed. Generating content...")
                 response = client_instance.models.generate_content(
