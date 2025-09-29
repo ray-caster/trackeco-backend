@@ -116,45 +116,49 @@ def get_v2_leaderboard(user_id):
                 for i, entry in enumerate(entries):
                     entry.rank = first_item_rank + i
         
-        # --- INITIAL LOAD (TOP OF LEADERBOARD) ---
+        # --- INITIAL LOAD (CENTERED ON THE CURRENT USER) ---
         else:
-            logging.info(f"Initial leaderboard load - fetching top of leaderboard for user: {user_id}")
+            logging.info(f"Initial leaderboard load for user: {user_id}")
+            # --- THIS ENTIRE BLOCK HAS BEEN REPLACED WITH SIMPLER, CORRECT LOGIC ---
+            user_doc = db.collection('users').document(user_id).get()
+            if not user_doc.exists:
+                return jsonify({"error": "Current user not found."}), 404
             
-            # Fetch the top of the leaderboard
-            query = base_query.limit(21)  # 21 items to show top of leaderboard
+            user_data = user_doc.to_dict()
+            user_points = int(user_data.get("totalPoints", 0))
+            
+            # 1. Calculate the user's true rank (this part is correct)
+            rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", user_points)).count().get()[0][0].value
+            rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
+            my_rank = rank_above + rank_at_my_level
+
+            logging.info(f"User {user_id} rank: {my_rank}, points: {user_points}")
+
+            # 2. Calculate the offset to center the user on a page of 21
+            # We want to show 10 users before them. Ensure offset is not negative.
+            offset = max(0, my_rank - 11)
+            
+            logging.info(f"Calculated offset: {offset}, my_rank: {my_rank}")
+            
+            # 3. Fetch the correct slice of the leaderboard using the offset
+            query = base_query.offset(offset).limit(21)
             docs = list(query.stream())
-            
-            # Get profile data and assign ranks starting from 1
+
+            # 4. The rank of the first person on our page is simply offset + 1
+            start_rank = offset + 1
+
+            logging.info(f"Query returned {len(docs)} docs, start_rank: {start_rank}")
+
+            # 5. Get profile data and assign the correct ranks
             all_doc_ids = [doc.id for doc in docs]
             entries = get_user_profiles_from_ids(all_doc_ids, user_id)
             
             for i, entry in enumerate(entries):
-                calculated_rank = i + 1  # Rank starts from 1 for top users
+                calculated_rank = start_rank + i
                 entry.rank = calculated_rank
                 logging.info(f"Assigning rank {calculated_rank} to user {entry.userId}")
             
-            # Also fetch the current user's specific rank to return separately
-            user_doc = db.collection('users').document(user_id).get()
-            if user_doc.exists:
-                user_data = user_doc.to_dict()
-                user_points = int(user_data.get("totalPoints", 0))
-                
-                # Calculate the user's true rank
-                rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", user_points)).count().get()[0][0].value
-                rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
-                my_rank_value = rank_above + rank_at_my_level
-                
-                # Find the user's entry in the results to return as myRank
-                my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
-                
-                # If user is not in the top 21, fetch their specific entry to return as myRank
-                if my_rank_entry is None and my_rank_value > 21:
-                    user_entry = get_user_profiles_from_ids([user_id], user_id)
-                    if user_entry:
-                        user_entry[0].rank = my_rank_value
-                        my_rank_entry = user_entry[0]
-            else:
-                my_rank_entry = None
+            my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
 
 
         final_entries = _apply_privacy_filter(entries)
