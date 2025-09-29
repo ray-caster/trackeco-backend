@@ -49,16 +49,21 @@ def get_v2_leaderboard(user_id):
         page_size = 20
         my_rank_entry = None
         
+        logging.info(f"Leaderboard request - start_after_doc_id: {start_after_doc_id}, start_before_doc_id: {start_before_doc_id}")
+        
         base_query = db.collection('users').order_by(
             'totalPoints', direction=firestore.Query.DESCENDING
         ).order_by(
             'userId', direction=firestore.Query.ASCENDING
         )
 
+        # Calculate total users using the same logic as rank calculations to ensure consistency
         total_users = base_query.count().get()[0][0].value
+        logging.info(f"Total users calculated: {total_users}")
 
         # --- PAGINATION LOGIC (UNCHANGED AND CORRECT) ---
         if start_after_doc_id:
+            logging.info(f"Pagination forward from doc_id: {start_after_doc_id}")
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
             if not last_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
@@ -66,16 +71,23 @@ def get_v2_leaderboard(user_id):
             query = base_query.start_after(last_doc_snapshot).limit(page_size)
             docs = list(query.stream())
             
+            # The rank of the document we started AFTER is what we need to calculate
             cursor_points = last_doc_snapshot.to_dict().get("totalPoints", 0)
             rank_above_cursor = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", cursor_points)).count().get()[0][0].value
-            rank_at_cursor_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<=", last_doc_snapshot.id)).count().get()[0][0].value
-            cursor_rank = rank_above_cursor + rank_at_cursor_level
+            rank_at_cursor_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<", last_doc_snapshot.id)).count().get()[0][0].value
+            rank_after_cursor = rank_above_cursor + rank_at_cursor_level  # This is the rank of the document we started AFTER
+            
+            # The first document in our results has the rank that comes right after the cursor document
+            first_item_rank = rank_after_cursor + 1
+            
+            logging.info(f"Forward pagination: rank_after_cursor={rank_after_cursor}, docs_count={len(docs)}, first_item_rank={first_item_rank}")
             
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
-                entry.rank = cursor_rank + i + 1
+                entry.rank = first_item_rank + i
 
         elif start_before_doc_id:
+            logging.info(f"Pagination backward from doc_id: {start_before_doc_id}")
             first_doc_snapshot = db.collection('users').document(start_before_doc_id).get()
             if not first_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
@@ -86,12 +98,19 @@ def get_v2_leaderboard(user_id):
 
             entries = []
             if docs:
-                first_new_doc = docs[0]
-                first_new_doc_points = first_new_doc.to_dict().get("totalPoints", 0)
-
-                rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", first_new_doc_points)).count().get()[0][0].value
-                rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", first_new_doc_points)).where(filter=firestore.FieldFilter("userId", "<=", first_new_doc.id)).count().get()[0][0].value
-                first_item_rank = rank_above + rank_at_level
+                # Calculate rank for the document that comes after our result set (the one we ended before)
+                doc_snapshot_ended_before = db.collection('users').document(start_before_doc_id).get()
+                doc_ended_before_points = doc_snapshot_ended_before.to_dict().get("totalPoints", 0)
+                
+                rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", doc_ended_before_points)).count().get()[0][0].value
+                rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", doc_ended_before_points)).where(filter=firestore.FieldFilter("userId", "<=", start_before_doc_id)).count().get()[0][0].value
+                doc_ended_before_rank = rank_above + rank_at_level  # Rank of the document we ended before
+                
+                # Our result set contains documents that come before the document we ended before
+                # So the first document in our result (highest ranked) should have rank = doc_ended_before_rank - len(docs)
+                first_item_rank = doc_ended_before_rank - len(docs)
+                
+                logging.info(f"Backward pagination: doc_ended_before_rank={doc_ended_before_rank}, docs_count={len(docs)}, first_item_rank={first_item_rank}")
 
                 entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
                 for i, entry in enumerate(entries):
@@ -99,6 +118,7 @@ def get_v2_leaderboard(user_id):
         
         # --- INITIAL LOAD (CENTERED ON THE CURRENT USER) ---
         else:
+            logging.info(f"Initial leaderboard load for user: {user_id}")
             # --- THIS ENTIRE BLOCK HAS BEEN REPLACED WITH SIMPLER, CORRECT LOGIC ---
             user_doc = db.collection('users').document(user_id).get()
             if not user_doc.exists:
@@ -112,9 +132,13 @@ def get_v2_leaderboard(user_id):
             rank_at_my_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", user_points)).where(filter=firestore.FieldFilter("userId", "<=", user_id)).count().get()[0][0].value
             my_rank = rank_above + rank_at_my_level
 
+            logging.info(f"User {user_id} rank: {my_rank}, points: {user_points}")
+
             # 2. Calculate the offset to center the user on a page of 21
             # We want to show 10 users before them. Ensure offset is not negative.
             offset = max(0, my_rank - 11)
+            
+            logging.info(f"Calculated offset: {offset}, my_rank: {my_rank}")
             
             # 3. Fetch the correct slice of the leaderboard using the offset
             query = base_query.offset(offset).limit(21)
@@ -123,12 +147,16 @@ def get_v2_leaderboard(user_id):
             # 4. The rank of the first person on our page is simply offset + 1
             start_rank = offset + 1
 
+            logging.info(f"Query returned {len(docs)} docs, start_rank: {start_rank}")
+
             # 5. Get profile data and assign the correct ranks
             all_doc_ids = [doc.id for doc in docs]
             entries = get_user_profiles_from_ids(all_doc_ids, user_id)
             
             for i, entry in enumerate(entries):
-                entry.rank = start_rank + i
+                calculated_rank = start_rank + i
+                entry.rank = calculated_rank
+                logging.info(f"Assigning rank {calculated_rank} to user {entry.userId}")
             
             my_rank_entry = next((e for e in entries if e.isCurrentUser), None)
 
