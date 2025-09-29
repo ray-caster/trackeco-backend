@@ -84,6 +84,16 @@ class AlgoliaSearchKeyResponse(BaseModel):
     indexName: str
 # --- CANONICAL USER & RESPONSE MODELS ---
 
+class ChallengeResponse(BaseModel):
+    challengeId: str
+    description: str
+    bonusPoints: int
+    isActive: bool = True
+    type: str
+    expiresAt: str = ""
+    progressGoal: Optional[int] = None
+    isTeamUpEligible: bool = False
+
 # This is now the single, canonical model for any user summary
 class UserSummary(BaseModel):
     rank: int
@@ -144,13 +154,3 @@ class UpdateSettingsRequest(BaseModel):
     analysisRemindersEnabled: Optional[bool] = None
     showDisplayNameInLeaderboard: Optional[bool] = None
     showAvatarInLeaderboard: Optional[bool] = None
-
-class ChallengeResponse(BaseModel):
-    challengeId: str
-    description: str
-    bonusPoints: int
-    isActive: bool = True
-    type: str
-    expiresAt: str = ""
-    progressGoal: Optional[int] = None
-    isTeamUpEligible: bool = False
