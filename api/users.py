@@ -301,7 +301,8 @@ def get_my_profile(user_id):
         analysisRemindersEnabled=user_data.get("analysisRemindersEnabled", True),
         showDisplayNameInLeaderboard=user_data.get("showDisplayNameInLeaderboard", True),
         showAvatarInLeaderboard=user_data.get("showAvatarInLeaderboard", True),
-        latestChallenges=latest_challenges
+        latestChallenges=latest_challenges,
+        hasCompletedTutorial=user_data.get("hasCompletedTutorial", False)
     )
     
     return profile.model_dump(), 200
