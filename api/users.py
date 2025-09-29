@@ -235,61 +235,41 @@ def get_my_profile(user_id):
                         hostDisplayName=host_profiles_map.get(host_id, "Someone")
                     ))
     
-    # Get latest completed challenges
+    # Get latest completed challenges from user's completedChallengeIds
     latest_challenges = []
     try:
-        # Get recent uploads for the user to identify recently completed challenges
-        upload_query = db.collection('uploads').where(
-            filter=firestore.FieldFilter("userId", "==", user_id)
-        ).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(20)
-        
-        recent_uploads = []
-        for doc in upload_query.stream():
-            upload_data = doc.to_dict()
-            if 'aiResult' in upload_data and upload_data.get('status') == 'SUCCESS':
-                # Extract challenge updates from AI result if available
-                ai_result = upload_data.get('aiResult', {})
-                if isinstance(ai_result, str):
-                    import json
-                    try:
-                        ai_result = json.loads(ai_result)
-                    except:
-                        continue
-                        
-                challenge_updates = ai_result.get('challengeUpdates', [])
-                if challenge_updates:
-                    for update in challenge_updates:
-                        if update.get('isCompleted'):
-                            # Get challenge details
-                            challenge_ref = db.collection('challenges').document(update['challengeId'])
-                            challenge_doc = challenge_ref.get()
-                            if challenge_doc.exists:
-                                challenge_data = challenge_doc.to_dict()
-                                # Create ChallengeResponse object with proper fields
-                                expires_at_value = challenge_data.get('expiresAt')
-                                expires_at_str = ""
-                                if expires_at_value:
-                                    if hasattr(expires_at_value, 'isoformat'):  # datetime object
-                                        expires_at_str = expires_at_value.isoformat()
-                                    else:  # Firestore timestamp
-                                        expires_at_str = str(expires_at_value)
-                                
-                                challenge_response = ChallengeResponse(
-                                    challengeId=challenge_data.get('challengeId'),
-                                    description=challenge_data.get('description'),
-                                    bonusPoints=challenge_data.get('bonusPoints', 0),
-                                    isActive=challenge_data.get('isActive', True),
-                                    type=challenge_data.get('type', ''),
-                                    expiresAt=expires_at_str,
-                                    progressGoal=challenge_data.get('progressGoal'),
-                                    isTeamUpEligible=challenge_data.get('isTeamUpEligible', False)
-                                )
-                                recent_uploads.append(challenge_response)
-    
-        # Get the 3 most recent completed challenges - sort by timestamp and take first 3
-        # Note: We can't sort ChallengeResponse objects by timestamp since they don't have that field
-        # We'll just return the most recent ones found
-        latest_challenges = recent_uploads[:3]
+        completed_challenge_ids = user_data.get('completedChallengeIds', [])
+        if completed_challenge_ids:
+            # Take the 3 most recently completed challenges (last 3 in the array)
+            recent_completed_ids = completed_challenge_ids[-3:] if len(completed_challenge_ids) >= 3 else completed_challenge_ids
+            recent_completed_ids.reverse()  # Reverse to get most recent first
+            
+            # Fetch challenge details for these IDs
+            for challenge_id in recent_completed_ids:
+                challenge_ref = db.collection('challenges').document(challenge_id)
+                challenge_doc = challenge_ref.get()
+                if challenge_doc.exists:
+                    challenge_data = challenge_doc.to_dict()
+                    # Create ChallengeResponse object with proper fields
+                    expires_at_value = challenge_data.get('expiresAt')
+                    expires_at_str = ""
+                    if expires_at_value:
+                        if hasattr(expires_at_value, 'isoformat'):  # datetime object
+                            expires_at_str = expires_at_value.isoformat()
+                        else:  # Firestore timestamp
+                            expires_at_str = str(expires_at_value)
+                    
+                    challenge_response = ChallengeResponse(
+                        challengeId=challenge_data.get('challengeId'),
+                        description=challenge_data.get('description'),
+                        bonusPoints=challenge_data.get('bonusPoints', 0),
+                        isActive=challenge_data.get('isActive', True),
+                        type=challenge_data.get('type', ''),
+                        expiresAt=expires_at_str,
+                        progressGoal=challenge_data.get('progressGoal'),
+                        isTeamUpEligible=challenge_data.get('isTeamUpEligible', False)
+                    )
+                    latest_challenges.append(challenge_response)
     except Exception as e:
         logging.error(f"Error fetching latest challenges for user {user_id}: {str(e)}")
     
@@ -331,60 +311,44 @@ def get_public_profile(user_id, profile_user_id):
     
     user_data = user_doc.to_dict()
     
-    # Get latest completed challenges for public profile
+    # Get latest completed challenges from user's completedChallengeIds for public profile
     latest_challenges = []
     try:
-        # Get recent uploads for the user to identify recently completed challenges
-        upload_query = db.collection('uploads').where(
-            filter=firestore.FieldFilter("userId", "==", profile_user_id)
-        ).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(20)
+        user_doc = db.collection('users').document(profile_user_id).get()
+        user_data = user_doc.to_dict() if user_doc.exists else {}
         
-        recent_uploads = []
-        for doc in upload_query.stream():
-            upload_data = doc.to_dict()
-            if 'aiResult' in upload_data and upload_data.get('status') == 'SUCCESS':
-                # Extract challenge updates from AI result if available
-                ai_result = upload_data.get('aiResult', {})
-                if isinstance(ai_result, str):
-                    import json
-                    try:
-                        ai_result = json.loads(ai_result)
-                    except:
-                        continue
-                        
-                challenge_updates = ai_result.get('challengeUpdates', [])
-                if challenge_updates:
-                    for update in challenge_updates:
-                        if update.get('isCompleted'):
-                            # Get challenge details
-                            challenge_ref = db.collection('challenges').document(update['challengeId'])
-                            challenge_doc = challenge_ref.get()
-                            if challenge_doc.exists:
-                                challenge_data = challenge_doc.to_dict()
-                                # Create ChallengeResponse object with proper fields
-                                expires_at_value = challenge_data.get('expiresAt')
-                                expires_at_str = ""
-                                if expires_at_value:
-                                    if hasattr(expires_at_value, 'isoformat'):  # datetime object
-                                        expires_at_str = expires_at_value.isoformat()
-                                    else:  # Firestore timestamp
-                                        expires_at_str = str(expires_at_value)
-                                
-                                challenge_response = ChallengeResponse(
-                                    challengeId=challenge_data.get('challengeId'),
-                                    description=challenge_data.get('description'),
-                                    bonusPoints=challenge_data.get('bonusPoints', 0),
-                                    isActive=challenge_data.get('isActive', True),
-                                    type=challenge_data.get('type', ''),
-                                    expiresAt=expires_at_str,
-                                    progressGoal=challenge_data.get('progressGoal'),
-                                    isTeamUpEligible=challenge_data.get('isTeamUpEligible', False)
-                                )
-                                recent_uploads.append(challenge_response)
-    
-        # Get the 3 most recent completed challenges - just take the first 3 found
-        # Note: We can't sort ChallengeResponse objects by timestamp since they don't have that field
-        latest_challenges = recent_uploads[:3]
+        completed_challenge_ids = user_data.get('completedChallengeIds', [])
+        if completed_challenge_ids:
+            # Take the 3 most recently completed challenges (last 3 in the array)
+            recent_completed_ids = completed_challenge_ids[-3:] if len(completed_challenge_ids) >= 3 else completed_challenge_ids
+            recent_completed_ids.reverse()  # Reverse to get most recent first
+            
+            # Fetch challenge details for these IDs
+            for challenge_id in recent_completed_ids:
+                challenge_ref = db.collection('challenges').document(challenge_id)
+                challenge_doc = challenge_ref.get()
+                if challenge_doc.exists:
+                    challenge_data = challenge_doc.to_dict()
+                    # Create ChallengeResponse object with proper fields
+                    expires_at_value = challenge_data.get('expiresAt')
+                    expires_at_str = ""
+                    if expires_at_value:
+                        if hasattr(expires_at_value, 'isoformat'):  # datetime object
+                            expires_at_str = expires_at_value.isoformat()
+                        else:  # Firestore timestamp
+                            expires_at_str = str(expires_at_value)
+                    
+                    challenge_response = ChallengeResponse(
+                        challengeId=challenge_data.get('challengeId'),
+                        description=challenge_data.get('description'),
+                        bonusPoints=challenge_data.get('bonusPoints', 0),
+                        isActive=challenge_data.get('isActive', True),
+                        type=challenge_data.get('type', ''),
+                        expiresAt=expires_at_str,
+                        progressGoal=challenge_data.get('progressGoal'),
+                        isTeamUpEligible=challenge_data.get('isTeamUpEligible', False)
+                    )
+                    latest_challenges.append(challenge_response)
     except Exception as e:
         logging.error(f"Error fetching latest challenges for user {profile_user_id}: {str(e)}")
     

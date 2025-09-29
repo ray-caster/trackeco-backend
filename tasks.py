@@ -333,7 +333,9 @@ def analyze_video_with_gemini(self, bucket_name, gcs_filename, upload_id, user_i
             api_key = ACTIVE_GEMINI_KEYS[current_index]
             try:
                 logging.info(f"--> Trying Gemini API Key #{current_index + 1}")
+                logging.info(f"API Key: {api_key}")
                 client_instance = genai.Client(api_key=api_key)
+                logging.info("Client initialized successfully")
                 
                 logging.info(f"Uploading file '{temp_local_path}' to Gemini File API...")
                 gemini_file_resource = client_instance.files.upload(file=temp_local_path)
