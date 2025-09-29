@@ -109,6 +109,8 @@ class PublicProfileResponse(BaseModel):
     avatarUrl: Optional[str] = None
     totalPoints: int = 0
     currentStreak: int = 0
+    maxStreak: int = 0
+    latestChallenges: List[ChallengeResponse] = []
 
 # The main, unified response for the /users/me endpoint
 class ProfileResponse(BaseModel):
@@ -134,6 +136,7 @@ class ProfileResponse(BaseModel):
     analysisRemindersEnabled: bool = True
     showDisplayNameInLeaderboard: bool = True
     showAvatarInLeaderboard: bool = True
+    latestChallenges: List[ChallengeResponse] = []
 
 class UpdateSettingsRequest(BaseModel):
     streakRemindersEnabled: Optional[bool] = None
@@ -141,3 +144,13 @@ class UpdateSettingsRequest(BaseModel):
     analysisRemindersEnabled: Optional[bool] = None
     showDisplayNameInLeaderboard: Optional[bool] = None
     showAvatarInLeaderboard: Optional[bool] = None
+
+class ChallengeResponse(BaseModel):
+    challengeId: str
+    description: str
+    bonusPoints: int
+    isActive: bool = True
+    type: str
+    expiresAt: str = ""
+    progressGoal: Optional[int] = None
+    isTeamUpEligible: bool = False
