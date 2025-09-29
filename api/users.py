@@ -204,15 +204,15 @@ def avatar_upload_complete(user_id):
 @token_required
 def get_my_profile(user_id):
     user_ref = db.collection('users').document(user_id)
-    user_doc = user_ref.get()
-
+    user_doc = user_ref.get(['totalPoints', 'currentStreak', 'maxStreak', 'onboardingComplete', 'onboardingStep', 'displayName', 'hasCompletedTutorial', 'userId', 'username', 'avatarUrl', 'referralCode', 'completedChallengeIds', 'challengeProgress', 'activeTeamChallenges', 'teamChallengeInvitations', 'streakRemindersEnabled', 'socialRemindersEnabled', 'analysisRemindersEnabled', 'showDisplayNameInLeaderboard', 'showAvatarInLeaderboard'])
+ 
     if not user_doc.exists:
         return jsonify({"error": "User not found"}), 404
-
+ 
     user_data = user_doc.to_dict()
     
     # Debug logging to see what values are being read from Firestore
-    logging.debug(f"Full profile for user {user_id}: onboardingComplete={user_data.get('onboardingComplete')}, onboardingStep={user_data.get('onboardingStep')}")
+    logging.debug(f"Full profile for user {user_id}: onboardingComplete={user_data.get('onboardingComplete')}, onboardingStep={user_data.get('onboardingStep')}, hasCompletedTutorial={user_data.get('hasCompletedTutorial')}")
 
     invitation_ids = user_data.get('teamChallengeInvitations', [])
     invitations = []
@@ -236,6 +236,51 @@ def get_my_profile(user_id):
                         hostDisplayName=host_profiles_map.get(host_id, "Someone")
                     ))
     
+    # Get latest completed challenges
+    latest_challenges = []
+    try:
+        # Get recent uploads for the user to identify recently completed challenges
+        upload_query = db.collection('uploads').where(
+            filter=firestore.FieldFilter("userId", "==", user_id)
+        ).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(20)
+        
+        recent_uploads = []
+        for doc in upload_query.stream():
+            upload_data = doc.to_dict()
+            if 'aiResult' in upload_data and upload_data.get('status') == 'SUCCESS':
+                # Extract challenge updates from AI result if available
+                ai_result = upload_data.get('aiResult', {})
+                if isinstance(ai_result, str):
+                    import json
+                    try:
+                        ai_result = json.loads(ai_result)
+                    except:
+                        continue
+                        
+                challenge_updates = ai_result.get('challengeUpdates', [])
+                if challenge_updates:
+                    for update in challenge_updates:
+                        if update.get('isCompleted'):
+                            # Get challenge details
+                            challenge_ref = db.collection('challenges').document(update['challengeId'])
+                            challenge_doc = challenge_ref.get()
+                            if challenge_doc.exists:
+                                challenge_data = challenge_doc.to_dict()
+                                recent_uploads.append({
+                                    'challengeId': challenge_data.get('challengeId'),
+                                    'description': challenge_data.get('description'),
+                                    'bonusPoints': challenge_data.get('bonusPoints', 0),
+                                    'type': challenge_data.get('type'),
+                                    'completedAt': upload_data.get('timestamp'),
+                                    'uploadId': upload_data.get('uploadId')
+                                })
+        
+        # Get the 3 most recent completed challenges
+        recent_uploads.sort(key=lambda x: x['completedAt'] if x['completedAt'] else 0, reverse=True)
+        latest_challenges = recent_uploads[:3]
+    except Exception as e:
+        logging.error(f"Error fetching latest challenges for user {user_id}: {str(e)}")
+    
     profile = ProfileResponse(
         userId=user_data.get("userId"),
         displayName=user_data.get("displayName"),
@@ -255,7 +300,8 @@ def get_my_profile(user_id):
         socialRemindersEnabled=user_data.get("socialRemindersEnabled", True),
         analysisRemindersEnabled=user_data.get("analysisRemindersEnabled", True),
         showDisplayNameInLeaderboard=user_data.get("showDisplayNameInLeaderboard", True),
-        showAvatarInLeaderboard=user_data.get("showAvatarInLeaderboard", True)
+        showAvatarInLeaderboard=user_data.get("showAvatarInLeaderboard", True),
+        latestChallenges=latest_challenges
     )
     
     return profile.model_dump(), 200
@@ -272,13 +318,60 @@ def get_public_profile(user_id, profile_user_id):
     
     user_data = user_doc.to_dict()
     
+    # Get latest completed challenges for public profile
+    latest_challenges = []
+    try:
+        # Get recent uploads for the user to identify recently completed challenges
+        upload_query = db.collection('uploads').where(
+            filter=firestore.FieldFilter("userId", "==", profile_user_id)
+        ).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(20)
+        
+        recent_uploads = []
+        for doc in upload_query.stream():
+            upload_data = doc.to_dict()
+            if 'aiResult' in upload_data and upload_data.get('status') == 'SUCCESS':
+                # Extract challenge updates from AI result if available
+                ai_result = upload_data.get('aiResult', {})
+                if isinstance(ai_result, str):
+                    import json
+                    try:
+                        ai_result = json.loads(ai_result)
+                    except:
+                        continue
+                        
+                challenge_updates = ai_result.get('challengeUpdates', [])
+                if challenge_updates:
+                    for update in challenge_updates:
+                        if update.get('isCompleted'):
+                            # Get challenge details
+                            challenge_ref = db.collection('challenges').document(update['challengeId'])
+                            challenge_doc = challenge_ref.get()
+                            if challenge_doc.exists:
+                                challenge_data = challenge_doc.to_dict()
+                                recent_uploads.append({
+                                    'challengeId': challenge_data.get('challengeId'),
+                                    'description': challenge_data.get('description'),
+                                    'bonusPoints': challenge_data.get('bonusPoints', 0),
+                                    'type': challenge_data.get('type'),
+                                    'completedAt': upload_data.get('timestamp'),
+                                    'uploadId': upload_data.get('uploadId')
+                                })
+        
+        # Get the 3 most recent completed challenges
+        recent_uploads.sort(key=lambda x: x['completedAt'] if x['completedAt'] else 0, reverse=True)
+        latest_challenges = recent_uploads[:3]
+    except Exception as e:
+        logging.error(f"Error fetching latest challenges for user {profile_user_id}: {str(e)}")
+    
     public_profile = PublicProfileResponse(
         userId=user_data.get('userId'),
         displayName=user_data.get('displayName'),
         username=user_data.get('username'),
         avatarUrl=user_data.get('avatarUrl'),
         totalPoints=int(user_data.get('totalPoints', 0)),
-        currentStreak=user_data.get('currentStreak', 0)
+        currentStreak=user_data.get('currentStreak', 0),
+        maxStreak=user_data.get('maxStreak', 0),
+        latestChallenges=latest_challenges
     )
     
     return public_profile.model_dump(), 200
@@ -291,7 +384,7 @@ def get_my_profile_quickview(user_id):
     needed for the main app UI, like the top bar stats.
     """
     user_ref = db.collection('users').document(user_id)
-    user_doc = user_ref.get(['totalPoints', 'currentStreak', 'maxStreak', 'onboardingComplete', 'onboardingStep', 'displayName'])
+    user_doc = user_ref.get(['totalPoints', 'currentStreak', 'maxStreak', 'onboardingComplete', 'onboardingStep', 'displayName', 'hasCompletedTutorial'])
 
     if not user_doc.exists:
         return jsonify({"error": "User not found"}), 404
@@ -310,3 +403,59 @@ def get_my_profile_quickview(user_id):
         "onboardingStep": user_data.get("onboardingStep", 0),
         "displayName": user_data.get("displayName")
     }), 200
+
+
+@users_bp.route('/<profile_user_id>/latest-challenges', methods=['GET'])
+@token_required
+def get_latest_completed_challenges(user_id, profile_user_id):
+    """
+    Returns the 3 most recently completed challenges for a user.
+    This fetches from the user's upload history to find the most recently completed challenges.
+    """
+    # Get user's recent uploads to identify recently completed challenges
+    # This looks at the uploads collection where AI results would indicate completed challenges
+    try:
+        # Get recent uploads for the user
+        upload_query = db.collection('uploads').where(
+            filter=firestore.FieldFilter("userId", "==", profile_user_id)
+        ).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(20)
+        
+        recent_uploads = []
+        for doc in upload_query.stream():
+            upload_data = doc.to_dict()
+            if 'aiResult' in upload_data and upload_data.get('status') == 'SUCCESS':
+                # Extract challenge updates from AI result if available
+                ai_result = upload_data.get('aiResult', {})
+                if isinstance(ai_result, str):
+                    import json
+                    try:
+                        ai_result = json.loads(ai_result)
+                    except:
+                        continue
+                        
+                challenge_updates = ai_result.get('challengeUpdates', [])
+                if challenge_updates:
+                    for update in challenge_updates:
+                        if update.get('isCompleted'):
+                            # Get challenge details
+                            challenge_ref = db.collection('challenges').document(update['challengeId'])
+                            challenge_doc = challenge_ref.get()
+                            if challenge_doc.exists:
+                                challenge_data = challenge_doc.to_dict()
+                                recent_uploads.append({
+                                    'challengeId': challenge_data.get('challengeId'),
+                                    'description': challenge_data.get('description'),
+                                    'bonusPoints': challenge_data.get('bonusPoints', 0),
+                                    'type': challenge_data.get('type'),
+                                    'completedAt': upload_data.get('timestamp'),
+                                    'uploadId': upload_data.get('uploadId')
+                                })
+        
+        # Get the 3 most recent completed challenges
+        recent_uploads.sort(key=lambda x: x['completedAt'] if x['completedAt'] else 0, reverse=True)
+        latest_challenges = recent_uploads[:3]
+        
+        return jsonify({"latestChallenges": latest_challenges}), 200
+    except Exception as e:
+        logging.error(f"Error fetching latest challenges for user {profile_user_id}: {str(e)}")
+        return jsonify({"error": "Could not fetch latest challenges"}), 500
