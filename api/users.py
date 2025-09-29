@@ -19,8 +19,6 @@ from .pydantic_models import (
 )
 from .cache_utils import get_user_summary_cache_key, invalidate_user_summary_cache # <-- IMPORT cache helpers
 
-
-
 def get_user_profiles_from_ids(user_ids, current_user_id=None):
     """
     The single, canonical helper function to fetch a list of user profiles.
@@ -393,7 +391,7 @@ def get_my_profile_quickview(user_id):
     user_data = user_doc.to_dict()
     
     # Debug logging to see what values are being read from Firestore
-    logging.debug(f"QuickView for user {user_id}: onboardingComplete={user_data.get('onboardingComplete')}, onboardingStep={user_data.get('onboardingStep')}")
+    logging.debug(f"QuickView for user {user_id}: onboardingComplete={user_data.get('onboardingComplete')}, onboardingStep={user_data.get('onboardingStep')}, hasCompletedTutorial={user_data.get('hasCompletedTutorial')}")
     
     # Return a minimal JSON object
     return jsonify({
@@ -402,61 +400,27 @@ def get_my_profile_quickview(user_id):
         "maxStreak": user_data.get("maxStreak", 0),
         "onboardingComplete": user_data.get("onboardingComplete", False),
         "onboardingStep": user_data.get("onboardingStep", 0),
-        "displayName": user_data.get("displayName")
+        "displayName": user_data.get("displayName"),
+        "hasCompletedTutorial": user_data.get("hasCompletedTutorial", False)
     }), 200
 
 
-@users_bp.route('/<profile_user_id>/latest-challenges', methods=['GET'])
+@users_bp.route('/update-tutorial-status', methods=['POST'])
 @token_required
-def get_latest_completed_challenges(user_id, profile_user_id):
+def update_tutorial_status(user_id):
     """
-    Returns the 3 most recently completed challenges for a user.
-    This fetches from the user's upload history to find the most recently completed challenges.
+    Updates the tutorial completion status for the user
     """
-    # Get user's recent uploads to identify recently completed challenges
-    # This looks at the uploads collection where AI results would indicate completed challenges
     try:
-        # Get recent uploads for the user
-        upload_query = db.collection('uploads').where(
-            filter=firestore.FieldFilter("userId", "==", profile_user_id)
-        ).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(20)
+        req_data = request.get_json()
+        has_completed_tutorial = req_data.get('hasCompletedTutorial', False)
         
-        recent_uploads = []
-        for doc in upload_query.stream():
-            upload_data = doc.to_dict()
-            if 'aiResult' in upload_data and upload_data.get('status') == 'SUCCESS':
-                # Extract challenge updates from AI result if available
-                ai_result = upload_data.get('aiResult', {})
-                if isinstance(ai_result, str):
-                    import json
-                    try:
-                        ai_result = json.loads(ai_result)
-                    except:
-                        continue
-                        
-                challenge_updates = ai_result.get('challengeUpdates', [])
-                if challenge_updates:
-                    for update in challenge_updates:
-                        if update.get('isCompleted'):
-                            # Get challenge details
-                            challenge_ref = db.collection('challenges').document(update['challengeId'])
-                            challenge_doc = challenge_ref.get()
-                            if challenge_doc.exists:
-                                challenge_data = challenge_doc.to_dict()
-                                recent_uploads.append({
-                                    'challengeId': challenge_data.get('challengeId'),
-                                    'description': challenge_data.get('description'),
-                                    'bonusPoints': challenge_data.get('bonusPoints', 0),
-                                    'type': challenge_data.get('type'),
-                                    'completedAt': upload_data.get('timestamp'),
-                                    'uploadId': upload_data.get('uploadId')
-                                })
+        user_ref = db.collection('users').document(user_id)
+        user_ref.update({
+            'hasCompletedTutorial': has_completed_tutorial
+        })
         
-        # Get the 3 most recent completed challenges
-        recent_uploads.sort(key=lambda x: x['completedAt'] if x['completedAt'] else 0, reverse=True)
-        latest_challenges = recent_uploads[:3]
-        
-        return jsonify({"latestChallenges": latest_challenges}), 200
+        return jsonify({"message": "Tutorial status updated successfully"}), 200
     except Exception as e:
-        logging.error(f"Error fetching latest challenges for user {profile_user_id}: {str(e)}")
-        return jsonify({"error": "Could not fetch latest challenges"}), 500
+        logging.error(f"Failed to update tutorial status for user {user_id}. Error: {e}")
+        return jsonify({"error": "Could not update tutorial status"}), 500
