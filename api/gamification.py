@@ -61,7 +61,7 @@ def get_v2_leaderboard(user_id):
         total_users = base_query.count().get()[0][0].value
         logging.info(f"Total users calculated: {total_users}")
 
-        # --- PAGINATION LOGIC (UNCHANGED AND CORRECT) ---
+        # --- PAGINATION LOGIC ---
         if start_after_doc_id:
             logging.info(f"Pagination forward from doc_id: {start_after_doc_id}")
             last_doc_snapshot = db.collection('users').document(start_after_doc_id).get()
@@ -71,16 +71,17 @@ def get_v2_leaderboard(user_id):
             query = base_query.start_after(last_doc_snapshot).limit(page_size)
             docs = list(query.stream())
             
+            # Calculate rank of the first document in the new page
             # The rank of the document we started AFTER is what we need to calculate
             cursor_points = last_doc_snapshot.to_dict().get("totalPoints", 0)
             rank_above_cursor = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", cursor_points)).count().get()[0][0].value
-            rank_at_cursor_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<", last_doc_snapshot.id)).count().get()[0][0].value
-            rank_after_cursor = rank_above_cursor + rank_at_cursor_level  # This is the rank of the document we started AFTER
+            rank_at_cursor_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", cursor_points)).where(filter=firestore.FieldFilter("userId", "<=", last_doc_snapshot.id)).count().get()[0][0].value
+            rank_of_cursor_doc = rank_above_cursor + rank_at_cursor_level  # This is the rank of the document we started AFTER
             
             # The first document in our results has the rank that comes right after the cursor document
-            first_item_rank = rank_after_cursor + 1
+            first_item_rank = rank_of_cursor_doc + 1
             
-            logging.info(f"Forward pagination: rank_after_cursor={rank_after_cursor}, docs_count={len(docs)}, first_item_rank={first_item_rank}")
+            logging.info(f"Forward pagination: rank_of_cursor_doc={rank_of_cursor_doc}, docs_count={len(docs)}, first_item_rank={first_item_rank}")
             
             entries = get_user_profiles_from_ids([doc.id for doc in docs], user_id)
             for i, entry in enumerate(entries):
@@ -92,9 +93,8 @@ def get_v2_leaderboard(user_id):
             if not first_doc_snapshot.exists:
                 return jsonify({"error": "Paging document not found."}), 404
             
-            query = base_query.end_before(first_doc_snapshot).limit_to_last(page_size)
-            docs_reversed = query.get()
-            docs = list(reversed(docs_reversed))
+            query = base_query.end_before(first_doc_snapshot).limit(page_size)
+            docs = list(query.stream())
 
             entries = []
             if docs:
@@ -103,12 +103,12 @@ def get_v2_leaderboard(user_id):
                 doc_ended_before_points = doc_snapshot_ended_before.to_dict().get("totalPoints", 0)
                 
                 rank_above = base_query.where(filter=firestore.FieldFilter("totalPoints", ">", doc_ended_before_points)).count().get()[0][0].value
-                rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", doc_ended_before_points)).where(filter=firestore.FieldFilter("userId", "<=", start_before_doc_id)).count().get()[0][0].value
+                rank_at_level = base_query.where(filter=firestore.FieldFilter("totalPoints", "==", doc_ended_before_points)).where(filter=firestore.FieldFilter("userId", "<", start_before_doc_id)).count().get()[0][0].value
                 doc_ended_before_rank = rank_above + rank_at_level  # Rank of the document we ended before
                 
                 # Our result set contains documents that come before the document we ended before
-                # So the first document in our result (highest ranked) should have rank = doc_ended_before_rank - len(docs)
-                first_item_rank = doc_ended_before_rank - len(docs)
+                # So the first document in our result (highest ranked) should have rank = doc_ended_before_rank - len(docs) + 1
+                first_item_rank = doc_ended_before_rank - len(docs) + 1
                 
                 logging.info(f"Backward pagination: doc_ended_before_rank={doc_ended_before_rank}, docs_count={len(docs)}, first_item_rank={first_item_rank}")
 
